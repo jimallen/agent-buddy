@@ -83,6 +83,64 @@ Driving it on the device still needs the panel itself brought up (item 2 below).
 - Confirm the flash is really 16 MB (`esptool flash_id`); the schematic silkscreen
   and some docs disagree.
 
+
+## Verified on hardware (and what it cost to learn)
+
+The board is running this firmware: panel, CH422G sequencing, character pack and render
+loop all work. Confirmed by `esptool flash-id` (ESP32-S3 rev v0.2, **16 MB** flash, 8 MB
+**OPI** PSRAM) and by `BOARD id=waveshare-lcd-70` in the device's own INFO reply.
+
+### The timing that the vendor actually ships
+
+Read verbatim from `ESP32_Display_Panel`'
+s `BOARD_WAVESHARE_ESP32_S3_TOUCH_LCD_7.h`,
+not from a summary:
+
+| Setting | Vendor value |
+| --- | --- |
+| PCLK | 16 MHz |
+| HBP / HFP | 8 / 8 |
+| VPW / VBP / VFP | 4 / 8 / 8 |
+| `PCLK_ACTIVE_NEG` | 1 (falling edge) |
+| Bounce buffer | `width * 10` pixels, "used to avoid screen drift for ESP32-S3" |
+
+Sync polarities are **not** overridden by the vendor: esp_lcd's defaults apply, i.e.
+`hsync_idle_low = 0` and `vsync_idle_low = 0`. Arduino_GFX expresses the opposite way
+round, so both `Arduino_ESP32RGBPanel` polarity arguments must be **1**. Getting that
+mapping backwards idles the syncs low and the picture jumps vertically.
+
+Two other traps worth remembering:
+
+- ESP-IDF allocates **two** bounce buffers (ping-pong). Ten lines is 32 KB of internal
+  RAM; asking for thirty dropped `free_internal` from 187 KB to 103 KB and would have
+  starved Wi-Fi.
+- `Arduino_ESP32RGBPanel`'s `useBigEndian` argument changes the data-lane order, not the
+  pixel byte order. The framebuffer itself must be **native RGB565** while the renderer's
+  frames are big-endian, so `kPanelSwappedBytes` applies the swap on the way in.
+
+### Diagnosing without a camera
+
+The host can read the framebuffer the panel scans (`s`), which separates "what we draw"
+from "what the panel shows". Three commands make the panel itself observable:
+
+| Command | Effect |
+| --- | --- |
+| `k` | Draw a calibration pattern (border, 8 colour bars, ruler every 40 rows) and freeze the loop |
+| `f` | Cycle fleet animation rate: 4 / 8 / 15 / 30 fps, then static |
+| `s` | Capture; in fleet mode this returns the whole 800x480 panel buffer |
+
+The calibration pattern is the important one: a static pattern that still moves rules out
+tearing and points at sync timing, while a pattern that is steady points at our writes.
+
+### Known-good fleet behaviour
+
+The fleet composes straight into the scanned framebuffer in row-sized writes (no staging
+copy: staging doubled the work and left the panel reading a half-written buffer), clears
+each redraw (the scaled art does not cover its column, so older poses otherwise accumulate
+into a smeared second character), and runs its own `CharacterEffects` over a second scratch
+pair so the orbiting tokens appear per column. Two columns cost ~41 ms per update, which
+caps the loop near 16 fps, so the default animation rate is 8 fps.
+
 ## Previewing without the board
 
 There is no usable emulator for this panel: QEMU's ESP32-S3 target and Wokwi both emulate the

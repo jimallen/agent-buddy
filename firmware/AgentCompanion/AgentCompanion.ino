@@ -64,6 +64,9 @@ uint16_t* fleetScratchAlt = nullptr;
 // True while the fleet is composed straight into a scanned panel framebuffer;
 // the presenter then has nothing to push.
 bool fleetOnPanel = false;
+// How often the fleet repaints. 0 freezes it: that is the only setting with no writes at all, and
+// therefore the only one that cannot tear.
+int64_t fleetStepMicros = 125000;
 // The fleet composes here and is copied to the scanned framebuffer in one pass. Writing the live
 // framebuffer column by column tears: the peripheral reads it continuously, so the panel shows
 // half-updated columns as a squashed second character and judder.
@@ -335,12 +338,11 @@ bool renderFleetOnPanel(CharacterSprite& sprite, Frame* frame, const PackHeader&
   // framebuffer it is scanning tears briefly. So write as rarely as possible - only when a rig's
   // state or the layout actually changes, coalesced to at most one redraw per second. Between
   // changes nothing touches the panel, and the picture is perfectly steady.
-  // Animate at a calm 8 fps. Each column costs a sprite render plus an effects pass, so a
-  // 125 ms budget leaves headroom while the characters still look around and blink instead of
-  // standing frozen. A layout change draws immediately.
+  // Animate at 15 fps: smoother than 8, which stepped visibly, while still inside the cost of a
+  // column's sprite render plus effects pass. A layout change draws immediately.
   const bool due = layoutChanged || start >= fleetNextStepAt;
   if (!due) return true;
-  fleetNextStepAt = start + 125000;
+  fleetNextStepAt = start + fleetStepMicros;
   // Only now that a redraw is really happening. Clear row by row: the peripheral keeps scanning
   // while we write, and interleaving small writes is what the single-character path does without
   // trouble, whereas one panel-sized burst starves it.
@@ -1430,6 +1432,17 @@ void processCommand(DeviceCommand command, const DeviceCommands& parser, const F
       break;
     case DeviceCommand::None: break;
     case DeviceCommand::Invalid: logMessage("COMMAND_ERROR invalid or incomplete packet\n"); break;
+    case DeviceCommand::FleetRate: {
+      static const int64_t kRates[] = {250000, 125000, 66000, 33000, 0};
+      static size_t rateIndex = 1;
+      rateIndex = (rateIndex + 1) % (sizeof(kRates) / sizeof(kRates[0]));
+      fleetStepMicros = kRates[rateIndex];
+      logMessage("FLEET_RATE %s\n", fleetStepMicros
+          ? (fleetStepMicros == 33000 ? "30 fps" : fleetStepMicros == 66000 ? "15 fps"
+             : fleetStepMicros == 125000 ? "8 fps" : "4 fps")
+          : "static");
+      break;
+    }
     case DeviceCommand::Calibration:
       if (calibrationMode) {
         calibrationMode = false;
