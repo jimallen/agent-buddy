@@ -6,6 +6,7 @@
 // Input is a raw RGB565 frame (the same bytes a device capture writes) placed at (x, y) inside
 // the square content area. Output is a binary PPM that tools/rgb_panel_preview.py turns into a
 // PNG. With no input, a test pattern is generated so the centring and margins are visible.
+#include "../firmware/AgentCompanion/src/FleetLayout.h"
 #include "../firmware/AgentCompanion/src/RgbScanout.h"
 #include <cmath>
 #include <cstdint>
@@ -26,6 +27,7 @@ struct Options {
   int content = 466, panelWidth = 800, panelHeight = 480;
   float angleDegrees = 0.0f;
   bool pattern = false;
+  int fleet = 1;
 };
 
 [[noreturn]] void usage(const char* why) {
@@ -50,6 +52,7 @@ int main(int argc, char** argv) {
     };
     if (flag == "--in") options.input = value();
     else if (flag == "--pattern") options.pattern = true;
+    else if (flag == "--fleet") options.fleet = std::atoi(value());
     else if (flag == "--width") options.width = std::atoi(value());
     else if (flag == "--height") options.height = std::atoi(value());
     else if (flag == "--x") options.x = std::atoi(value());
@@ -92,16 +95,43 @@ int main(int argc, char** argv) {
   }
 
   std::vector<uint16_t> panel(static_cast<size_t>(options.panelWidth) * options.panelHeight, 0);
-  std::vector<uint16_t> scratch(static_cast<size_t>(options.content) * options.content, 0);
-  RgbScanout scanout(panel.data(), options.panelWidth, options.panelHeight, options.content,
-                     scratch.data());
-  if (!scanout.begin()) { std::fprintf(stderr, "%s\n", scanout.error()); return 1; }
-  if (std::fabs(options.angleDegrees) > 0.001f)
-    scanout.setAngle(options.angleDegrees * 3.14159265358979f / 180.0f);
-  const Rgb565Order order = options.order == "native" ? Rgb565Order::Native : Rgb565Order::Display;
-  if (!scanout.compose({frame.data(), options.x, options.y, options.width, options.height, order})) {
-    std::fprintf(stderr, "%s\n", scanout.error());
-    return 1;
+  if (options.fleet > 1) {
+    // One column per rig across the panel's full width; each character keeps its aspect, so
+    // they all read at a similar size instead of huddling in the middle.
+    for (int index = 0; index < options.fleet; ++index) {
+      const FleetColumn column = fleetColumn(index, options.fleet, options.panelWidth,
+                                             options.panelHeight, options.width, options.height);
+      if (column.width <= 0) { std::fprintf(stderr, "bad fleet layout\n"); return 1; }
+      for (int y = 0; y < column.artHeight; ++y) {
+        const int sourceY = y * options.height / column.artHeight;
+        for (int x = 0; x < column.artWidth; ++x) {
+          const int sourceX = x * options.width / column.artWidth;
+          uint16_t pixel = frame[static_cast<size_t>(sourceY) * options.width + sourceX];
+          // The panel framebuffer is native RGB565; a device capture is in display order.
+          if (options.order != "native") pixel = swapBytes(pixel);
+          panel[static_cast<size_t>(column.artY + y) * options.panelWidth + column.artX + x] = pixel;
+        }
+      }
+    }
+    std::printf("%dx%d panel, %d column(s) of art %dx%d\n",
+                options.panelWidth, options.panelHeight, options.fleet,
+                options.width, options.height);
+  } else {
+    // Single-character view: the firmware's own centring and byte-order rules.
+    std::vector<uint16_t> scratch(static_cast<size_t>(options.content) * options.content, 0);
+    RgbScanout scanout(panel.data(), options.panelWidth, options.panelHeight, options.content,
+                       scratch.data());
+    if (!scanout.begin()) { std::fprintf(stderr, "%s\n", scanout.error()); return 1; }
+    if (std::fabs(options.angleDegrees) > 0.001f)
+      scanout.setAngle(options.angleDegrees * 3.14159265358979f / 180.0f);
+    const Rgb565Order order = options.order == "native" ? Rgb565Order::Native : Rgb565Order::Display;
+    if (!scanout.compose({frame.data(), options.x, options.y, options.width, options.height, order})) {
+      std::fprintf(stderr, "%s\n", scanout.error());
+      return 1;
+    }
+    std::printf("%dx%d panel, content %d at (%d, %d)\n",
+                options.panelWidth, options.panelHeight, options.content,
+                scanout.contentX(), scanout.contentY());
   }
 
   std::FILE* out = std::fopen(options.output.c_str(), "wb");
@@ -119,8 +149,5 @@ int main(int argc, char** argv) {
   }
   std::fwrite(rgb.data(), 1, rgb.size(), out);
   std::fclose(out);
-  std::printf("%dx%d panel, content %d at (%d, %d)\n",
-              options.panelWidth, options.panelHeight, options.content,
-              scanout.contentX(), scanout.contentY());
   return 0;
 }

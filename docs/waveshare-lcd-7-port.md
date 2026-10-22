@@ -98,8 +98,20 @@ python3 tools/rgb_panel_preview.py --in frame.raw             # a device capture
 python3 tools/rgb_panel_preview.py --pattern --angle 90       # rotation
 ```
 
+Add `--fleet N` to tile N characters across the panel's full width, which is the layout the
+fleet should use on the wide board:
+
+```bash
+python3 tools/rgb_panel_preview.py --in frame.raw --fleet 3
+```
+
 `frame.raw` is the raw RGB565 from a device capture (`CAPTURE` / the `s` command), which is
-exactly what the firmware hands the scanout. Verified at 800x480: content at (167, 7), the
+exactly what the firmware hands the scanout.
+
+`src/FleetLayout.h` is the arithmetic behind that: divide the panel width by the rig count,
+then fit each character inside its column without distorting it, anchored above the nameplate.
+Two rigs on 800x480 give two ~400px columns with each character about 452px tall, so they read
+at nearly the single-character size instead of huddling in the middle of the panel. Verified at 800x480: content at (167, 7), the
 412-wide character frame placed at its own offset inside the 466 content, margins black.
 
 ## Testing without the board

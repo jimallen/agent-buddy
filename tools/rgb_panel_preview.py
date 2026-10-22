@@ -41,6 +41,8 @@ def main() -> int:
     parser.add_argument("--panel-height", type=int, default=480)
     parser.add_argument("--order", choices=("display", "native"), default="display")
     parser.add_argument("--angle", type=float, default=0.0)
+    parser.add_argument("--fleet", type=int, default=1,
+                        help="tile this many characters across the panel's full width")
     parser.add_argument("--out", default="build/rgb-panel.png")
     args = parser.parse_args()
     if not args.raw and not args.pattern:
@@ -52,7 +54,8 @@ def main() -> int:
                "--width", str(args.width), "--height", str(args.height),
                "--x", str(args.x), "--y", str(args.y), "--content", str(args.content),
                "--panel-width", str(args.panel_width), "--panel-height", str(args.panel_height),
-               "--order", args.order, "--angle", str(args.angle)]
+               "--order", args.order, "--angle", str(args.angle),
+               "--fleet", str(args.fleet)]
     command += ["--in", args.raw] if args.raw else ["--pattern"]
     summary = subprocess.run(command, check=True, capture_output=True, text=True).stdout.strip()
 
