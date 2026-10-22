@@ -92,6 +92,14 @@ class RgbDisplay : public Arduino_Canvas {
   bool setTransferBuffer(uint8_t*, size_t) { return true; }
 
   void setBrightness(uint8_t brightness) { setBrightness_(brightness); }
+
+  // The framebuffer the peripheral scans, for callers that want the whole panel (the fleet on a
+  // wide board). Null before begin().
+  uint16_t* panelFramebuffer(int& width, int& height) {
+    width = kRgbPanelWidth;
+    height = kRgbPanelHeight;
+    return panel_ ? panel_->getFramebuffer() : nullptr;
+  }
   const char* error() const { return error_; }
   uint32_t composeUs() const { return composeUs_; }
   uint32_t writeUs() const { return writeUs_; }

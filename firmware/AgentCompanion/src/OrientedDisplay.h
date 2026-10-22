@@ -20,6 +20,9 @@ class OrientedDisplay : public Arduino_Canvas {
   float angle() const { return ScreenOrientation::shortestAngle(orientation_.angle() + trim_); }
   bool setTransferBuffer(uint8_t* buffer, size_t bytes);
   void setBrightness(uint8_t brightness) { setBrightness_(brightness); }
+  // A push display owns no panel-sized surface: the fleet composes into the content frame and
+  // this display streams that out. Null here keeps the sketch's wide-fleet branch inert.
+  uint16_t* panelFramebuffer(int&, int&) { return nullptr; }
   const char* error() const { return error_; }
   uint32_t composeUs() const { return composeUs_; }
   uint32_t writeUs() const { return writeUs_; }

@@ -21,6 +21,7 @@
 #include "src/AudioPlayer.h"
 #include "src/AgentBadges.h"
 #include "src/RigFleet.h"
+#include "src/FleetLayout.h"
 #include "src/CharacterEffects.h"
 #include "src/CharacterFrame.h"
 #include "src/Deadline.h"
@@ -54,6 +55,9 @@ uint16_t* fleetPresentation = nullptr;
 // The fleet view renders each rig's chief of staff into a column.
 CharacterMotion* fleetMotions = nullptr;
 uint16_t* fleetScratch = nullptr;
+// True while the fleet is composed straight into a scanned panel framebuffer;
+// the presenter then has nothing to push.
+bool fleetOnPanel = false;
 uint32_t fleetRenderedRevision = 0;
 uint32_t fleetLayoutRevision = 0;
 int64_t fleetNextStepAt = 0;
@@ -179,7 +183,7 @@ constexpr int kRigBadgeTop = 3;
 // Draws one agent's 24x24 badge mask (the same icons the badge strip uses) so a rig column can
 // name the harness behind that rig's chief of staff. Skips silently when the daemon has not
 // sent that icon.
-void drawRigAgentIcon(const char* id, uint16_t* frame, int x, int y, int size) {
+void drawRigAgentIcon(const char* id, uint16_t* frame, int frameWidth, int x, int y, int size) {
   if (!id || !id[0] || !frame) return;
   const AgentBadgesSnapshot badges = agentBadges.snapshot();
   const AgentBadgeIcon* icon = nullptr;
@@ -198,8 +202,8 @@ void drawRigAgentIcon(const char* id, uint16_t* frame, int x, int y, int size) {
       if (!(bits & (0x80 >> (sourceX % 8)))) continue;
       const int fx = x + px;
       const int fy = y + py;
-      if (fx < kCharacterFrameWidth && fy < kCharacterFrameHeight)
-        frame[fy * kCharacterFrameWidth + fx] = icon->color;
+      if (fx < frameWidth && fy < kCharacterFrameHeight)
+        frame[fy * frameWidth + fx] = icon->color;
     }
   }
 }
@@ -236,11 +240,81 @@ int rigBadgeStrip(uint16_t* frame) {
   return kRigBadgeTop + kRigBadgeSize + 4;
 }
 
+// The fleet on a panel wider than the content: one column per rig across the panel's whole
+// width, each character fitted to its column so they read at a similar size (FleetLayout.h).
+// The LCD_CAM scans this buffer continuously, so we only redraw when something changed.
+bool renderFleetOnPanel(CharacterSprite& sprite, Frame* frame, const PackHeader& pack,
+                        const RigFleetSnapshot& fleet, int64_t start,
+                        uint16_t* panel, int panelWidth, int panelHeight) {
+  if (!fleetMotions) {
+    fleetMotions = static_cast<CharacterMotion*>(allocate(
+        sizeof(CharacterMotion) * kMaxRigSlots, MALLOC_CAP_SPIRAM, "Fleet motion allocation failed."));
+    for (size_t index = 0; index < kMaxRigSlots; ++index) new (&fleetMotions[index]) CharacterMotion(esp_random());
+  }
+  if (!fleetScratch) {
+    fleetScratch = static_cast<uint16_t*>(allocate(
+        sizeof(uint16_t) * kCharacterFrameWidth * kCharacterFrameHeight, MALLOC_CAP_SPIRAM,
+        "Fleet scratch allocation failed."));
+  }
+  const bool layoutChanged = fleet.layoutRevision != fleetLayoutRevision;
+  const bool statesChanged = fleet.revision != fleetRenderedRevision;
+  if (layoutChanged) {
+    fleetLayoutRevision = fleet.layoutRevision;
+    // The column count or order moved, so the whole panel starts clean.
+    std::memset(panel, 0, static_cast<size_t>(panelWidth) * panelHeight * sizeof(uint16_t));
+  }
+  if (statesChanged) {
+    fleetRenderedRevision = fleet.revision;
+    for (size_t index = 0; index < fleet.count; ++index) {
+      const CharacterMode requested = fleet.slots[index].mode;
+      if (fleetApplied[index] == requested) continue;
+      // The one fleet sound: a chief of staff entering needs-input.
+      if (requested == CharacterMode::Attention && rigFleet.fleetMode()) queueAudioCue(AudioCue::Attention);
+      if (!fleetMotions[index].setMode(requested)) fatal(fleetMotions[index].error());
+      fleetApplied[index] = requested;
+    }
+  }
+  if (!layoutChanged && !statesChanged && start < fleetNextStepAt) return true;
+  fleetNextStepAt = start + 1000000;
+  const int artTop = (kCharacterFrameHeight - kFrameHeight) / 2;
+  for (size_t index = 0; index < fleet.count; ++index) {
+    const RigSlot& slot = fleet.slots[index];
+    stepCharacterMotion(fleetMotions[index], (start - fleetLastStep[index]) / 1000000.0, pack);
+    fleetLastStep[index] = start;
+    const CharacterState state = fleetMotions[index].state();
+    if (index == 0) frame->state = state;
+    if (!sprite.render(state, fleetScratch)) return false;
+    const FleetColumn column = fleetColumn(static_cast<int>(index), static_cast<int>(fleet.count),
+                                           panelWidth, panelHeight,
+                                           kCharacterFrameWidth, kCharacterFrameHeight);
+    blitRigColumn(fleetScratch + artTop * kCharacterFrameWidth, kCharacterFrameWidth, kFrameHeight,
+                  panel, panelWidth, column.artX, column.artY, column.artWidth, column.artHeight,
+                  slot.present ? 1 : 0);
+    const int labelY = panelHeight - 16;
+    const int labelWidth = static_cast<int>(std::strlen(slot.label)) * 6;
+    drawRigLabel(panel, panelWidth, panelHeight,
+                 column.x + std::max(0, (column.width - labelWidth) / 2), labelY,
+                 slot.label, rigLabelColor(slot.mode, slot.present));
+    constexpr int kIconSize = 18;
+    drawRigAgentIcon(slot.agent, panel, panelWidth,
+                     column.x + (column.width - kIconSize) / 2, labelY - 4 - kIconSize, kIconSize);
+  }
+  return true;
+}
+
 // The fleet is a status board: render columns only on fleet-packet or heartbeat changes,
 // never per frame tick. frame->pixels keeps the last picture; the ping-pong buffers share it
 // by copying when the presentation buffer swaps.
 bool renderFleetFrame(CharacterSprite& sprite, Frame* frame, const PackHeader& pack,
                       const RigFleetSnapshot& fleet, int64_t start) {
+  // A display with a panel-sized surface takes the fleet across the whole panel. A push display
+  // has none, so the fleet stays inside the square content frame it streams out.
+  int panelWidth = 0, panelHeight = 0;
+  if (uint16_t* panel = display.panelFramebuffer(panelWidth, panelHeight)) {
+    fleetOnPanel = true;
+    return renderFleetOnPanel(sprite, frame, pack, fleet, start, panel, panelWidth, panelHeight);
+  }
+  fleetOnPanel = false;
   if (!fleetMotions) {
     fleetMotions = static_cast<CharacterMotion*>(allocate(
         sizeof(CharacterMotion) * kMaxRigSlots, MALLOC_CAP_SPIRAM, "Fleet motion allocation failed."));
@@ -306,7 +380,7 @@ bool renderFleetFrame(CharacterSprite& sprite, Frame* frame, const PackHeader& p
     // The harness behind this rig's chief of staff: Claude Code, Pi, Codex and so on. One
     // character pack serves every column, so this icon is what tells the rigs apart.
     constexpr int kRigAgentIconSize = 18;
-    drawRigAgentIcon(slot.agent, target,
+    drawRigAgentIcon(slot.agent, target, kCharacterFrameWidth,
                      x0 + (columnWidth - kRigAgentIconSize) / 2,
                      kCharacterFrameHeight - 16 - 4 - kRigAgentIconSize,
                      kRigAgentIconSize);
@@ -1614,10 +1688,10 @@ void loop() {
   previousPresentation = start;
   uint32_t transferUs = 0;
   if (!settings.isOpen() && !prompt) {
-    // While the fleet view is on, the presenter shows the fleet's own persistent frame; that
-    // single source is what keeps the columns from flashing between renders.
+    // A wide panel is already showing the fleet: it scans the framebuffer we composed into, so
+    // pushing the content frame over it would paint a small square on top of the columns.
     const uint16_t* pixels = rigFleet.count() && fleetPresentation ? fleetPresentation : frame->pixels;
-    if (!display.flushFrame(
+    if (!fleetOnPanel && !display.flushFrame(
             pixels, kCharacterFrameX, 0, kCharacterFrameWidth, kCharacterFrameHeight))
       fatal(display.error());
   } else if (orientationChanged) {
