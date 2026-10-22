@@ -1,5 +1,7 @@
 #include "RigFleet.h"
 #include "Rgb565.h"
+
+namespace { inline uint16_t swapBytesValue(uint16_t v) { return copilot::swapBytes(v); } }
 #include <cstring>
 
 namespace copilot {
@@ -191,12 +193,14 @@ uint16_t dimRigPixel(uint16_t pixel) {
 }
 
 void blitRigColumn(const uint16_t* art, int artWidth, int artHeight, uint16_t* frame,
-                   int frameWidth, int x0, int y0, int width, int height, int fullBrightness) {
+                   int frameWidth, int x0, int y0, int width, int height, int fullBrightness,
+                   bool swapBytes) {
   for (int y = 0; y < height; ++y) {
     const int sourceY = y * artHeight / height;
     for (int x = 0; x < width; ++x) {
       const int sourceX = x * artWidth / width;
-      const uint16_t pixel = art[sourceY * artWidth + sourceX];
+      uint16_t pixel = art[sourceY * artWidth + sourceX];
+      if (swapBytes) pixel = swapBytesValue(pixel);
       frame[(y0 + y) * frameWidth + x0 + x] = fullBrightness ? pixel : dimRigPixel(pixel);
     }
   }

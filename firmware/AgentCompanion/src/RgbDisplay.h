@@ -48,7 +48,7 @@ class RgbDisplay : public Arduino_Canvas {
     }
     delete scanout_;
     scanout_ = new RgbScanout(framebuffer, kRgbPanelWidth, kRgbPanelHeight,
-                              kDisplaySize, scratch_);
+                              kDisplaySize, scratch_, kPanelSwappedBytes);
     if (!scanout_->begin()) {
       error_ = scanout_->error();
       return false;
@@ -63,10 +63,11 @@ class RgbDisplay : public Arduino_Canvas {
     compose({_framebuffer, 0, 0, kDisplaySize, kDisplaySize, Rgb565Order::Native});
   }
 
-  // Character frames arrive in the pack's display order and sit at kCharacterFrameX inside the
-  // content, exactly as on the other boards.
+  // On this board the frame buffers already hold values the panel can read directly: the RGB
+  // peripheral takes native RGB565, and the scanout does no swapping unless a board asks for it.
+  // (The SPI boards push the same buffers as display order because their panel expects bytes.)
   bool flushFrame(const uint16_t* pixels, int x, int y, int width, int height) {
-    return compose({pixels, x, y, width, height, Rgb565Order::Display});
+    return compose({pixels, x, y, width, height, Rgb565Order::Native});
   }
 
   bool setAngle(float radians) {

@@ -183,7 +183,8 @@ constexpr int kRigBadgeTop = 3;
 // Draws one agent's 24x24 badge mask (the same icons the badge strip uses) so a rig column can
 // name the harness behind that rig's chief of staff. Skips silently when the daemon has not
 // sent that icon.
-void drawRigAgentIcon(const char* id, uint16_t* frame, int frameWidth, int x, int y, int size) {
+void drawRigAgentIcon(const char* id, uint16_t* frame, int frameWidth, int x, int y, int size,
+                      bool swapColor = false) {
   if (!id || !id[0] || !frame) return;
   const AgentBadgesSnapshot badges = agentBadges.snapshot();
   const AgentBadgeIcon* icon = nullptr;
@@ -203,7 +204,7 @@ void drawRigAgentIcon(const char* id, uint16_t* frame, int frameWidth, int x, in
       const int fx = x + px;
       const int fy = y + py;
       if (fx < frameWidth && fy < kCharacterFrameHeight)
-        frame[fy * frameWidth + fx] = icon->color;
+        frame[fy * frameWidth + fx] = swapColor ? copilot::swapBytes(icon->color) : icon->color;
     }
   }
 }
@@ -287,17 +288,21 @@ bool renderFleetOnPanel(CharacterSprite& sprite, Frame* frame, const PackHeader&
     const FleetColumn column = fleetColumn(static_cast<int>(index), static_cast<int>(fleet.count),
                                            panelWidth, panelHeight,
                                            kCharacterFrameWidth, kCharacterFrameHeight);
+    // This path writes the framebuffer the panel scans, so it applies the board's byte order.
     blitRigColumn(fleetScratch + artTop * kCharacterFrameWidth, kCharacterFrameWidth, kFrameHeight,
                   panel, panelWidth, column.artX, column.artY, column.artWidth, column.artHeight,
-                  slot.present ? 1 : 0);
+                  slot.present ? 1 : 0, kPanelSwappedBytes);
     const int labelY = panelHeight - 16;
     const int labelWidth = static_cast<int>(std::strlen(slot.label)) * 6;
+    // Colours follow the same byte order as the pixels around them.
+    const uint16_t labelColor = rigLabelColor(slot.mode, slot.present);
     drawRigLabel(panel, panelWidth, panelHeight,
                  column.x + std::max(0, (column.width - labelWidth) / 2), labelY,
-                 slot.label, rigLabelColor(slot.mode, slot.present));
+                 slot.label, kPanelSwappedBytes ? copilot::swapBytes(labelColor) : labelColor);
     constexpr int kIconSize = 18;
     drawRigAgentIcon(slot.agent, panel, panelWidth,
-                     column.x + (column.width - kIconSize) / 2, labelY - 4 - kIconSize, kIconSize);
+                     column.x + (column.width - kIconSize) / 2, labelY - 4 - kIconSize, kIconSize,
+                     kPanelSwappedBytes);
   }
   return true;
 }
@@ -442,6 +447,9 @@ void animate(void*) {
     const bool rendered = fleet.count
         ? renderFleetFrame(sprite, frame, pack, fleet, start)
         : sprite.render(frame->state, frame->pixels);
+    // Only the fleet writes straight into a scanned panel; every other frame travels through the
+    // content path, so the presenter must start pushing again.
+    if (!fleet.count) fleetOnPanel = false;
     portENTER_CRITICAL(&renderLock);
     renderActive = false;
     portEXIT_CRITICAL(&renderLock);
@@ -494,7 +502,20 @@ bool writeCapture(const uint8_t* data, size_t bytes) {
 
 bool captureFrame(const Frame& frame) {
   captureInterrupted = true;
-  constexpr size_t bytes = kCharacterFrameWidth * kCharacterFrameHeight * 2;
+  // Capture what the display actually shows. On a wide panel in fleet mode that is the scanned
+  // framebuffer; elsewhere it is the fleet's own frame or the character frame.
+  const uint16_t* pixels = rigFleet.count() && fleetPresentation ? fleetPresentation : frame.pixels;
+  int captureWidth = kCharacterFrameWidth;
+  int captureHeight = kCharacterFrameHeight;
+  if (fleetOnPanel) {
+    int panelWidth = 0, panelHeight = 0;
+    if (uint16_t* panel = display.panelFramebuffer(panelWidth, panelHeight)) {
+      pixels = panel;
+      captureWidth = panelWidth;
+      captureHeight = panelHeight;
+    }
+  }
+  const size_t bytes = static_cast<size_t>(captureWidth) * captureHeight * sizeof(uint16_t);
   char header[256];
   const int length = snprintf(header, sizeof(header),
       "CAPTURE_POSE direction=%u frame=%u blink=%u\n"
@@ -505,14 +526,12 @@ bool captureFrame(const Frame& frame) {
       static_cast<unsigned>(frame.state.pose.blinkLevel), static_cast<unsigned>(frame.state.mode),
       static_cast<unsigned>(frame.state.requestedMode), frame.state.effectSeconds, frame.state.eventId,
       characterPack() ? characterPack()->header.id : "none",
-      kCharacterFrameWidth, kCharacterFrameHeight, static_cast<unsigned>(bytes));
+      captureWidth, captureHeight, static_cast<unsigned>(bytes));
   if (length < 0 || static_cast<size_t>(length) >= sizeof(header)) {
     logMessage("CAPTURE_ERROR header formatting failed\n");
     return false;
   }
   const char end[] = "\nEND_FRAME\n";
-  // Capture what the display actually shows: in fleet mode that is the fleet's own frame.
-  const uint16_t* pixels = rigFleet.count() && fleetPresentation ? fleetPresentation : frame.pixels;
   return writeCapture(reinterpret_cast<const uint8_t*>(header), length)
       && writeCapture(reinterpret_cast<const uint8_t*>(pixels), bytes)
       && writeCapture(reinterpret_cast<const uint8_t*>(end), sizeof(end) - 1);

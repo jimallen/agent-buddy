@@ -48,6 +48,9 @@ constexpr int kRgbPclkActiveNeg = 1;
 // stable picture and a shimmering one on this class of panel.
 constexpr int kRgbBounceLines = 10;
 // The backlight is a plain enable on the CH422G (an AP3032 boost driver), so brightness is on/off.
+// The LCD_CAM reads the framebuffer as native RGB565, while the renderer's frame buffers hold
+// big-endian words (the pack encoding is word-up-be). So a byte swap is needed on the way in.
+constexpr bool kPanelSwappedBytes = true;
 constexpr int kBrightness = 255;
 // The RGB panel takes no bus speed; -1 means "use the driver default".
 constexpr int kDisplaySpeed = -1;

@@ -30,7 +30,8 @@ bool isRigStateLetter(char letter);
 // channel); drawRigLabel writes a lowercase 5x7 label into the frame, one pixel cell per
 // set bit. Unknown characters skip a cell rather than failing.
 void blitRigColumn(const uint16_t* art, int artWidth, int artHeight, uint16_t* frame,
-                   int frameWidth, int x0, int y0, int width, int height, int fullBrightness);
+                   int frameWidth, int x0, int y0, int width, int height, int fullBrightness,
+                   bool swapBytes = false);
 // Writes are clipped to the frame; an over-long label is truncated.
 void drawRigLabel(uint16_t* frame, int frameWidth, int frameHeight, int x, int y,
                   const char* label, uint16_t color);
