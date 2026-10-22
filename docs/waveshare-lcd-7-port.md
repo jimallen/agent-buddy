@@ -46,15 +46,25 @@ display path, not a different pin map, which is why it needs its own work.
 The backlight is a plain enable (AP3032 boost), **not PWM**: there is no dimming
 path on this board, so `setDisplayBrightness` becomes on/off.
 
+## Scanout compositor (done)
+
+`src/RgbScanout.h` owns the panel framebuffer and composites our square content into it:
+centred, margins black, rotation through `ScreenTransform`, and the display-order to
+native-RGB565 conversion in one place. It is host-tested (`tests/test_rgb_scanout.cpp`,
+run by `tools/test_device_inputs.sh`) against the real 800x480 geometry, so the centring,
+margin and byte-order rules are settled before any hardware exists.
+
+Driving it on the device still needs the panel itself brought up (item 2 below).
+
 ## Work items, in order
 
 1. **Board target** — add `waveshare-lcd-70` to `firmware/boards.json` with its own
    define and FQBN, plus `src/boards/waveshare_lcd_70/{BoardConfig.h,BoardDrivers.h}`.
    Do this last, once it compiles, because CI builds every listed board.
-2. **RGB scanout** — replace the `DisplayDma` path for this board with
-   `Arduino_ESP32RGBPanel` + a PSRAM framebuffer, and draw the existing 466x466
-   content centred in 800x480. `ScreenTransform` already scales content to a panel,
-   so the renderer should not need changes.
+2. **RGB scanout** — bring up `Arduino_ESP32RGBPanel` with the framebuffer
+   `RgbScanout` composites into, and hand that panel's begin/backlight to the board
+   layer. `RgbScanout` is done; what remains is the peripheral setup (timing, pin
+   order, `prefer_speed`) and proving the framebuffer byte order on glass.
 3. **Touch** — drive the GT911 (`TouchDrvGT911.hpp` ships in the vendored SensorLib)
    with INT 4 and reset on EXIO1.
 4. **No IMU** — `OrientationSensor` must report "unavailable" rather than fail;

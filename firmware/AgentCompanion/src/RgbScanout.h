@@ -1,0 +1,117 @@
+#pragma once
+#include "ScreenTransform.h"
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+
+namespace copilot {
+// Scanout for a controller-less RGB panel (the Waveshare ESP32-S3-Touch-LCD-7 and boards like it).
+//
+// Those panels have no "send a frame" step: the LCD_CAM peripheral continuously scans a
+// framebuffer out of PSRAM. So this class owns that framebuffer and composites our square
+// content into it, centred, painting the margins black. It replaces DisplayDma for such boards
+// rather than running beside it.
+//
+// The content is kDisplaySize square; the panel is typically wider (800x480), so the content is
+// centred and the extra area stays black. Rotation still goes through ScreenTransform, which
+// emits display-order pixels, while the panel framebuffer holds native RGB565; the conversion
+// between the two lives here and in one place only.
+class RgbScanout {
+ public:
+  // panelSwapped flips the byte order written into the framebuffer. The RGB peripheral reads
+  // native RGB565, so this stays false; it exists so a wiring surprise is a flag, not a rewrite.
+  RgbScanout(uint16_t* framebuffer, int panelWidth, int panelHeight, int contentSize,
+              uint16_t* scratch = nullptr, bool panelSwapped = false)
+      : panel_(framebuffer), panelWidth_(panelWidth), panelHeight_(panelHeight),
+        content_(contentSize), scratch_(scratch), swapped_(panelSwapped) {
+    valid_ = framebuffer != nullptr && panelWidth > 0 && panelHeight > 0
+             && contentSize > 0 && contentSize <= panelWidth && contentSize <= panelHeight;
+    if (!valid_) error_ = "Invalid RGB panel geometry or framebuffer.";
+  }
+
+  // Paints the whole panel black once, so the margins are defined before the first frame.
+  bool begin() {
+    error_ = nullptr;
+    if (!valid_) return false;
+    std::memset(panel_, 0, static_cast<size_t>(panelWidth_) * panelHeight_ * sizeof(uint16_t));
+    painted_ = true;
+    return true;
+  }
+
+  bool setAngle(float radians) {
+    if (!std::isfinite(radians)) {
+      error_ = "Display angle must be finite.";
+      return false;
+    }
+    if (radians == angle_) return false;
+    angle_ = radians;
+    return true;
+  }
+  float angle() const { return angle_; }
+
+  // Composites one content frame. A rotated frame needs the scratch buffer supplied at
+  // construction (contentSize squared pixels); an unrotated frame copies straight across.
+  bool compose(const ScreenPixels& source) {
+    error_ = nullptr;
+    if (!valid_) return false;
+    if (!source.pixels || source.x < 0 || source.y < 0 || source.width <= 0 || source.height <= 0
+        || source.x >= content_ || source.y >= content_
+        || source.width > content_ - source.x || source.height > content_ - source.y) {
+      error_ = "Invalid RGB scanout source.";
+      return false;
+    }
+    const bool rotate = angle_ != 0.0f;
+    if (rotate && !scratch_) {
+      error_ = "Rotated RGB scanout needs a scratch buffer.";
+      return false;
+    }
+    const uint16_t* pixels = source.pixels;
+    Rgb565Order order = source.order;
+    int stride = content_;
+    if (rotate) {
+      const ScreenTransform transform(content_, content_, angle_);
+      if (!transform.renderRows(source, 0, content_, scratch_,
+                                static_cast<size_t>(content_) * content_)) {
+        error_ = "RGB scanout rotation failed.";
+        return false;
+      }
+      pixels = scratch_;
+      order = Rgb565Order::Display;
+    }
+    const int originX = contentX();
+    const int originY = contentY();
+    const bool convert = (order == Rgb565Order::Native) == swapped_;
+    for (int y = 0; y < content_; ++y) {
+      const uint16_t* from = pixels + static_cast<size_t>(y) * stride;
+      uint16_t* to = panel_ + static_cast<size_t>(originY + y) * panelWidth_ + originX;
+      if (convert) {
+        for (int x = 0; x < content_; ++x) to[x] = swapBytes(from[x]);
+      } else {
+        std::memcpy(to, from, static_cast<size_t>(content_) * sizeof(uint16_t));
+      }
+    }
+    painted_ = true;
+    return true;
+  }
+
+  // Where the content sits inside the panel. Odd differences leave the spare pixel on the right
+  // and bottom, which keeps the content at a stable position for every frame.
+  int contentX() const { return (panelWidth_ - content_) / 2; }
+  int contentY() const { return (panelHeight_ - content_) / 2; }
+
+  uint16_t* framebuffer() const { return panel_; }
+  bool painted() const { return painted_; }
+  const char* error() const { return error_; }
+
+ private:
+  uint16_t* panel_;
+  int panelWidth_, panelHeight_, content_;
+  uint16_t* scratch_;
+  bool swapped_;
+  bool valid_ = false;
+  bool painted_ = false;
+  float angle_ = 0.0f;
+  const char* error_ = nullptr;
+};
+}
