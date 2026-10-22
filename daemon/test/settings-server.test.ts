@@ -30,6 +30,7 @@ class FakeService extends EventEmitter {
   orientationChanges: number[] = [];
   agentActions: string[] = [];
   badges: boolean[] = [];
+  openrig: Array<{enabled?: boolean; url?: string}> = [];
   desktop: Array<{visible?: boolean; backdrop?: string; sounds?: boolean; volume?: number; character?: string}> = [];
   usage: Array<{enabled?: boolean; window?: string}> = [];
   usbFirmware = {release: '0.7.0', releaseId: null, flasher: true, port: '/dev/test', unanswered: false,
@@ -50,6 +51,7 @@ class FakeService extends EventEmitter {
             orientation: this.orientation, installing: null, lastInstall: null,
             drivingAgents: [], agents: this.agentStatuses(),
             badges: {enabled: true, active: [], icons: [{id: 'copilot', name: 'GitHub Copilot', color: '#6F7CFF', mask: Buffer.alloc(72).toString('base64')}]},
+            openrig: {enabled: false, url: 'http://127.0.0.1:7433', reachable: false, rigs: []},
             desktop: {visible: true, backdrop: 'device', sounds: false, volume: 30, character: 'copilot', pack: null},
             usage: {enabled: true, window: 'today', aic: 902, tokens: null, lines: ['AIC: 902'], summary: ['AIC: 902']}} as never;
   }
@@ -101,6 +103,10 @@ class FakeService extends EventEmitter {
   }
   async setAgentBadgesEnabled(enabled: boolean) {
     this.badges.push(enabled);
+  }
+  async setOpenrig(change: {enabled?: boolean; url?: string}) {
+    this.openrig.push(change);
+    return {enabled: true, url: 'http://127.0.0.1:7433', reachable: false, rigs: []};
   }
   async setDesktop(change: {visible?: boolean; backdrop?: string; sounds?: boolean; volume?: number; character?: string}) {
     if (change.character === 'missing') throw new Error('Unknown character.');
@@ -488,6 +494,11 @@ test('validates and performs actions', async () => {
     assert.equal((await call('/api/badges', {method: 'POST', headers: json, body: '{"enabled":"yes"}'})).status, 400);
     assert.equal((await call('/api/badges', {method: 'POST', headers: json, body: '{"enabled":false}'})).status, 200);
     assert.deepEqual(service.badges, [false]);
+    assert.equal((await call('/api/openrig', {method: 'POST', headers: json, body: '{"enabled":"yes"}' })).status, 400);
+    assert.equal((await call('/api/openrig', {method: 'POST', headers: json, body: '{"url":42}' })).status, 400);
+    assert.equal((await call('/api/openrig', {method: 'POST', headers: json, body: '{"enabled":true}'})).status, 200);
+    assert.equal((await call('/api/openrig', {method: 'POST', headers: json, body: '{"url":"http://rig-host:7433"}'})).status, 200);
+    assert.deepEqual(service.openrig, [{enabled: true}, {url: 'http://rig-host:7433'}]);
     assert.equal((await call('/api/desktop', {method: 'POST', headers: json, body: '{}'})).status, 400);
     assert.equal((await call('/api/desktop', {method: 'POST', headers: json, body: '{"visible":"no"}'})).status, 400);
     assert.equal((await call('/api/desktop', {method: 'POST', headers: json, body: '{"backdrop":"neon"}'})).status, 400);

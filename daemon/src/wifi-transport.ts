@@ -13,6 +13,7 @@ import {
   type AgentBadgeIconDefinition,
 } from './agent-badges.js';
 import {shouldSendUsage, usagePacket} from './usage-tracker.js';
+import {shouldSendRigs} from './rig-coordinator.js';
 import {discoverWifiDevices, loadWifiConfig, type WifiConfig} from './wifi-config.js';
 
 const uploadChunkBytes = 16 * 1024;
@@ -56,6 +57,7 @@ export class WifiTransport {
   #iconSignature = '';
   #activeSignature = '';
   #usageSignature: string | null = null;
+  #rigSignature: string | null = null;
   #scanTimer: NodeJS.Timeout | undefined;
   #scanActive = false;
   #commands = Promise.resolve();
@@ -408,7 +410,24 @@ export class WifiTransport {
       });
   }
 
-  async #postBadge(path: '/icon' | '/agents' | '/usage' | '/orientation', body: string): Promise<Response> {
+  // The OpenRig fleet view rides the same packet channel; protocol 13+ firmware only.
+  setRigFleet(packet: string): void {
+    if (this.#installing || !this.#enabled || !this.#config || !this.#endpoint
+        || !shouldSendRigs(this.#protocol) || packet === this.#rigSignature) return;
+    this.#commands = this.#commands
+      .then(async () => {
+        if (!this.#config || !this.#endpoint || !shouldSendRigs(this.#protocol)
+            || packet === this.#rigSignature) return;
+        await this.#postBadge('/rigs', `=${packet}`);
+        this.#rigSignature = packet;
+      })
+      .catch(error => {
+        console.error(`[wifi] ${this.#message(error)}`);
+        this.#setConnection(false, null);
+      });
+  }
+
+  async #postBadge(path: '/icon' | '/agents' | '/usage' | '/orientation' | '/rigs', body: string): Promise<Response> {
     if (!this.#config || !this.#endpoint) throw new Error('The Wi-Fi device is not connected.');
     const response = await fetch(`${this.#endpoint}${path}`, {
       method: 'POST',
@@ -433,6 +452,7 @@ export class WifiTransport {
       this.#iconSignature = '';
       this.#activeSignature = '';
       this.#usageSignature = null;
+      this.#rigSignature = null;
     }
     if (changed) this.#changed();
   }

@@ -45,6 +45,7 @@ export interface SettingsServerOptions {
     | 'removeCharacter' | 'configureWifi' | 'scanWifi' | 'setConnection' | 'agentStatuses' | 'setAgentEnabled'
     | 'installAgentHook' | 'uninstallAgentHook' | 'setAgentBadgesEnabled' | 'setDesktop' | 'startDesktop'
     | 'stopDesktop' | 'setUsage' | 'setOrientationOffset' | 'updateFirmware' | 'installFirmwareOverUsb'
+    | 'setOpenrig'
     | 'uninstall' | 'stopService' | 'restartService' | 'onboardingStatus' | 'updateOnboarding'
     | 'restartOnboarding' | 'navigateOnboarding' | 'installOnboardingAgents' | 'detectUsbDevices' | 'detectDevice'
     | 'applyOnboardingDisplay'
@@ -325,6 +326,18 @@ export function createSettingsServer(options: SettingsServerOptions): Server {
       if (typeof body.enabled !== 'boolean') throw new HttpError(400, 'Badge setting must be true or false.');
       await service.setAgentBadgesEnabled(body.enabled);
       return json(response, 200, {ok: true, enabled: body.enabled});
+    }
+    if (method === 'POST' && segments.length === 1 && segments[0] === 'openrig') {
+      const body = await readJson(request) as {enabled?: unknown; url?: unknown};
+      if (body.enabled !== undefined && typeof body.enabled !== 'boolean')
+        throw new HttpError(400, 'OpenRig use must be true or false.');
+      if (body.url !== undefined && typeof body.url !== 'string')
+        throw new HttpError(400, 'The OpenRig daemon address must be a string.');
+      const openrig = await service.setOpenrig({
+        ...(body.enabled === undefined ? {} : {enabled: body.enabled as boolean}),
+        ...(body.url === undefined ? {} : {url: body.url as string}),
+      });
+      return json(response, 200, {ok: true, openrig});
     }
     if (method === 'POST' && segments.length === 1 && segments[0] === 'desktop') {
       const body = await readJson(request) as {visible?: unknown; backdrop?: unknown; sounds?: unknown; volume?: unknown;

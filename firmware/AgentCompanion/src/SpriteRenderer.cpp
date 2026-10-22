@@ -21,12 +21,14 @@ uint64_t microsNow() {
 
 SpriteRenderer::SpriteRenderer(uint16_t* firstOpenPatch, uint16_t* secondOpenPatch, uint16_t* patch,
                                size_t patchCapacity, uint16_t* firstOutput, uint16_t* secondOutput,
-                               InflateSprite inflate, int outputWidth, int outputHeight)
-    : openPatches_{firstOpenPatch, secondOpenPatch}, patch_(patch), patchCapacity_(patchCapacity),
-      outputs_{firstOutput, secondOutput}, outputWidth_(outputWidth), outputHeight_(outputHeight), inflate_(inflate) {}
+                               InflateSprite inflate, int outputWidth, int outputHeight,
+                               uint16_t* fleetOpenPatch, uint16_t* fleetOutput)
+    : openPatches_{firstOpenPatch, secondOpenPatch, fleetOpenPatch}, patch_(patch),
+      patchCapacity_(patchCapacity), outputs_{firstOutput, secondOutput, fleetOutput},
+      outputWidth_(outputWidth), outputHeight_(outputHeight), inflate_(inflate) {}
 
 void SpriteRenderer::invalidate() {
-  for (unsigned i = 0; i < 2; ++i) {
+  for (unsigned i = 0; i < 3; ++i) {
     baseKeys_[i] = UINT32_MAX;
     outputKeys_[i] = UINT32_MAX;
   }
@@ -68,7 +70,9 @@ bool SpriteRenderer::render(const SpritePose& pose, uint16_t* frame) {
     error_ = "Sprite output must match the exported stride and fit the artwork and display.";
     return false;
   }
-  const int outputIndex = frame == outputs_[0] ? 0 : frame == outputs_[1] ? 1 : -1;
+  int outputIndex = -1;
+  for (int index = 0; index < 3; ++index)
+    if (outputs_[index] && frame == outputs_[index]) outputIndex = index;
   if (outputIndex < 0) {
     error_ = "Sprite output buffer is not registered.";
     return false;

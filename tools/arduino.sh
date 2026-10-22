@@ -46,7 +46,19 @@ case "$ACTION" in
     python3 "$ROOT/tools/firmware_artifacts.py" record
     ;;
   upload|upload-code)
-    PORT="${2:-/dev/cu.usbmodem2101}"
+    # Firmware updates leave the character the device already has: the pack lives in its own
+    # partition, and replacing it is a separate decision. Pass --with-character to install the
+    # default Copilot pack too (a new device, or to go back to Copilot).
+    PORT="/dev/cu.usbmodem2101"
+    WITH_CHARACTER=0
+    for argument in "$@"; do
+      case "$argument" in
+        "$ACTION") ;;
+        --with-character) WITH_CHARACTER=1 ;;
+        -*) echo "Unknown option: $argument" >&2; exit 2 ;;
+        *) PORT="$argument" ;;
+      esac
+    done
     if [[ ! -f "$BUILD_DIR/AgentCompanion.ino.bin" ]]; then
       echo "Build first: BOARD=$BOARD bash tools/arduino.sh build" >&2
       exit 1
@@ -56,8 +68,7 @@ case "$ACTION" in
     python3 "$ROOT/tools/firmware_artifacts.py" check
     ASSET_OFFSET="$(python3 "$ROOT/tools/firmware_artifacts.py" asset-offset)"
     EXTRA_FILES=""
-    if [[ "$ACTION" == "upload" ]]; then
-      # A complete upload also installs the default Copilot character pack.
+    if [[ "$WITH_CHARACTER" == 1 ]]; then
       EXTRA_FILES="$ASSET_OFFSET \"$ROOT/build/characters/copilot.acpk\""
     fi
     "$CLI" --config-file "$CONFIG" upload --fqbn "$FQBN" \
@@ -71,7 +82,8 @@ case "$ACTION" in
     "$PYTHON" "$ROOT/tools/device.py" --port "${2:-/dev/cu.usbmodem2101}" --seconds "${3:-30}"
     ;;
   *)
-    echo "Usage: [BOARD=<id>] bash tools/arduino.sh {build|upload [port]|upload-code [port]|monitor [port] [seconds]}" >&2
+    echo "Usage: [BOARD=<id>] bash tools/arduino.sh {build|upload [port] [--with-character]|upload-code [port]|monitor [port] [seconds]}" >&2
+    echo "  upload keeps the character already on the device unless --with-character is given." >&2
     echo "Boards: $(python3 "$ROOT/tools/boards.py" list | tr '\n' ' ')" >&2
     exit 2
     ;;

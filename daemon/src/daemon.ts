@@ -12,6 +12,8 @@ import {startSettingsServer} from './settings-server.js';
 import {isAgentId} from './agents/types.js';
 import {defaultAgentContext, normalizeAgentHook, otherAgentLocations} from './agents/index.js';
 import {loadAgentBadgeIcons} from './agent-badges.js';
+import {OpenRigClient} from './openrig.js';
+import {RigCoordinator, rigFleetPacket, type RigView} from './rig-coordinator.js';
 import {desktopBackdrops, isDesktopBackdrop, isDesktopVolume} from './display-settings.js';
 import {isUsageWindow, usageWindows} from './usage-tracker.js';
 
@@ -45,7 +47,17 @@ export async function runDaemon(): Promise<void> {
       service?.syncUsage();
     },
   });
-  service = new CompanionService(transport, coordinator, agentContext, badgeIcons);
+  // The OpenRig rig watcher follows the display preference the service reports.
+  let openrigWatcher: OpenrigWatcher | undefined;
+  // Rig views go to Settings and, on protocol 13+ devices, to the fleet display. Clearing
+  // OpenRig (or a daemon that goes away) clears the fleet's columns with an empty packet.
+  const applyRigView = (view: RigView | null) => {
+    service?.setRigView(view);
+    transport.setRigFleet(view?.reachable ? rigFleetPacket(view.rigs) : '');
+  };
+  service = new CompanionService(transport, coordinator, agentContext, badgeIcons, undefined, undefined, undefined,
+    undefined, undefined, undefined, preference => openrigWatcher?.apply(preference));
+  openrigWatcher = new OpenrigWatcher(view => applyRigView(view));
   // Picks up characters added or changed since the last run before anyone opens the settings page.
   void service.refreshCharacterPacks();
   await service.refreshWifiPairing();
@@ -80,9 +92,11 @@ export async function runDaemon(): Promise<void> {
   await transport.start(preparingUsb ? 'auto' : connectionMode, service.deviceEnabled, preparingUsb ? setup.port : null);
   console.log(`[daemon] listening ${path}`);
   settingsUrl = await startSettingsServer(companion);
+  openrigWatcher.apply(service.openrigPreference());
 
   const shutdown = async () => {
     companion.stopUsage();
+    openrigWatcher.close();
     coordinator.close();
     await store.flush(coordinator.snapshot());
     await transport.stop();
@@ -100,6 +114,42 @@ export async function runDaemon(): Promise<void> {
 }
 
 export const agentHookTimeoutMs = 45_000;
+
+// Starts, swaps, and stops the OpenRig rig watcher with the display preference.
+export class OpenrigWatcher {
+  #coordinator: RigCoordinator | undefined;
+  #url: string | undefined;
+  readonly #onChange: (view: RigView | null) => void;
+
+  constructor(onChange: (view: RigView | null) => void) {
+    this.#onChange = onChange;
+  }
+
+  apply(preference: {enabled: boolean; url: string}): void {
+    if (!preference.enabled) {
+      if (this.#coordinator) {
+        this.#coordinator.close();
+        this.#coordinator = undefined;
+        this.#onChange(null);
+      }
+      return;
+    }
+    if (this.#coordinator && this.#url === preference.url) return;
+    this.#coordinator?.close();
+    const client = new OpenRigClient({baseUrl: preference.url});
+    this.#url = preference.url;
+    this.#coordinator = new RigCoordinator({
+      poll: () => client.snapshotRigs(),
+      onChange: view => this.#onChange(view),
+    });
+    void this.#coordinator.pollOnce();
+  }
+
+  close(): void {
+    this.#coordinator?.close();
+    this.#coordinator = undefined;
+  }
+}
 
 export function handleSocket(socket: Socket, coordinator: StateCoordinator, transport: DeviceTransport,
                       service: CompanionService, settingsUrl: () => string | null): void {
@@ -170,6 +220,13 @@ export function handleSocket(socket: Socket, coordinator: StateCoordinator, tran
         reply(service.setConnection(mode).then(() => ({ok: true, mode})));
       } else if (request.type === 'badges' && typeof request.enabled === 'boolean') {
         reply(service.setAgentBadgesEnabled(request.enabled).then(() => ({ok: true, enabled: request.enabled})));
+      } else if (request.type === 'openrig') {
+        if (request.enabled !== undefined && typeof request.enabled !== 'boolean')
+          throw new Error('OpenRig use must be on (true) or off (false).');
+        if (request.url !== undefined && typeof request.url !== 'string')
+          throw new Error('The OpenRig daemon address must be a string.');
+        reply(service.setOpenrig({enabled: request.enabled, url: request.url})
+          .then(openrig => ({ok: true, openrig})));
       } else if (request.type === 'desktop') {
         if (request.visible !== undefined && typeof request.visible !== 'boolean')
           throw new Error('Desktop visibility must be true or false.');

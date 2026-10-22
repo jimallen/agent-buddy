@@ -54,7 +54,7 @@ import {
   type AgentBadgeStatusIcon,
 } from './agent-badges.js';
 import {
-  loadDisplaySettingsSync, saveDisplaySettings, type DesktopBackdrop, type DisplaySettings,
+  loadDisplaySettingsSync, saveDisplaySettings, isOpenrigUrl, type DesktopBackdrop, type DisplaySettings,
 } from './display-settings.js';
 import {
   defaultDataDirectory, deviceHistoryPath, serviceInfo, serviceStoppedPath, socketPath, type ServiceInfo,
@@ -62,13 +62,18 @@ import {
 import {
   createServiceRestartPlan, createServiceStopPlan, createUninstallPlan, runUninstall, type UninstallPlan,
 } from './uninstaller.js';
-import type {DaemonStatus, HookEvent, HookPayload, InstallProgress, WifiNetwork} from './protocol.js';
+import type {DaemonStatus, HookEvent, HookPayload, InstallProgress, OpenrigStatus, WifiNetwork} from './protocol.js';
 import type {StateCoordinator} from './state-coordinator.js';
 import {builtFirmwareReader, type FirmwareImage} from './firmware-image.js';
 import {isOrientationOffset, type DeviceOrientation} from './orientation-settings.js';
 import {deviceUsageLines, UsageTracker, usageLines, type UsageTotals, type UsageWindow} from './usage-tracker.js';
 import {loadWifiConfig, saveWifiConfig, validateWifiCredentials} from './wifi-config.js';
 import {OnboardingStore, SetupError, type OnboardingChange, type OnboardingState, type OnboardingStep} from './onboarding.js';
+import type {RigView} from './rig-coordinator.js';
+
+// The daemon calls this when the OpenRig preference changes so it can start or stop
+// watching the rig daemon.
+export type OpenrigPreferenceListener = (preference: {enabled: boolean; url: string}) => void;
 
 export interface InstallState {
   character: string;
@@ -146,6 +151,8 @@ export interface UsbFirmwareInstaller {
 
 export interface CompanionStatus extends DaemonStatus {
   service: ServiceInfo;
+  // The OpenRig fleet view: always present, enabled or not.
+  openrig: OpenrigStatus;
   wifiPaired: boolean;
   // Whether this computer has used a device. Without one, quitting the desktop app stops the service.
   deviceUsed: boolean;
@@ -244,10 +251,12 @@ export class CompanionService extends EventEmitter {
   #installBusy = false;
   #lastInstall: InstallResult | null = null;
   #wifiPaired = false;
+  #rigView: RigView | null = null;
   readonly #service = serviceInfo();
   readonly #transport: DeviceTransport;
   readonly #coordinator: StateCoordinator;
   readonly #agentContext: AgentContext;
+  readonly #openrigListener: OpenrigPreferenceListener;
   // Warnings from the last hook install or removal, shown in Settings until the next one.
   readonly #agentWarnings = new Map<AgentId, string>();
   readonly #lastAgentEvents = new Map<AgentId, number>();
@@ -295,7 +304,8 @@ export class CompanionService extends EventEmitter {
               firmwareImage: () => FirmwareImage | null = builtFirmwareReader(),
               usbInstaller: UsbFirmwareInstaller = {releases: new FirmwareReleases(), flash: runUsbFlasher},
               onboarding = new OnboardingStore(process.env.AGENT_COMPANION_ONBOARDING
-                ?? join(agentContext.dataDir, 'onboarding.json'))) {
+                ?? join(agentContext.dataDir, 'onboarding.json')),
+              openrigListener: OpenrigPreferenceListener = () => undefined) {
     super();
     this.#transport = transport;
     this.#coordinator = coordinator;
@@ -308,6 +318,7 @@ export class CompanionService extends EventEmitter {
     this.#firmwareImage = firmwareImage;
     this.#usbInstaller = usbInstaller;
     this.#onboarding = onboarding;
+    this.#openrigListener = openrigListener;
   }
 
   // Finds the release firmware that earlier installs downloaded, so status can say if it is current.
@@ -406,6 +417,7 @@ export class CompanionService extends EventEmitter {
       sessions: this.#coordinator.sessionCount,
       agents: this.agentStatuses(),
       drivingAgents: this.#coordinator.drivingAgents,
+      openrig: this.openrigStatus(),
       badges: {
         enabled: this.#display.showAgentBadges,
         active: this.#coordinator.agentBadgeRoles().active.map(item => ({id: item.id, role: roleName(item.role)})),
@@ -451,6 +463,43 @@ export class CompanionService extends EventEmitter {
 
   async refreshCharacterPreference(): Promise<void> {
     this.#characterPreference = await loadCharacterPreference().catch(() => 'copilot');
+  }
+
+  // The daemon's watcher starts or stops on this.
+  openrigPreference(): {enabled: boolean; url: string} {
+    return {enabled: this.#display.openrigEnabled, url: this.#display.openrigUrl};
+  }
+
+  openrigStatus(): OpenrigStatus {
+    return {
+      enabled: this.#display.openrigEnabled,
+      url: this.#display.openrigUrl,
+      reachable: this.#rigView?.reachable ?? false,
+      rigs: this.#display.openrigEnabled ? (this.#rigView?.rigs ?? []) : [],
+    };
+  }
+
+  // The RigCoordinator hands over the current fleet. The settings page reads it from status.
+  setRigView(view: RigView | null): void {
+    this.#rigView = view;
+    this.emit('change');
+  }
+
+  async setOpenrig(change: {enabled?: boolean; url?: string}): Promise<OpenrigStatus> {
+    return this.#mutate(async () => {
+      if (change.url !== undefined && !isOpenrigUrl(change.url))
+        throw new Error('The OpenRig daemon address needs to be an http:// or https:// URL.');
+      this.#display = {
+        ...this.#display,
+        ...(change.enabled === undefined ? {} : {openrigEnabled: change.enabled}),
+        ...(change.url === undefined ? {} : {openrigUrl: change.url}),
+      };
+      await saveDisplaySettings(this.#display);
+      if (!this.#display.openrigEnabled) this.#rigView = null;
+      this.emit('change');
+      this.#openrigListener(this.openrigPreference());
+      return this.openrigStatus();
+    });
   }
 
   agentStatuses(): AgentStatus[] {

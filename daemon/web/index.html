@@ -336,6 +336,27 @@
         <p class="hint">Choose which agents to connect. Hooks are installed only when you approve them. Turn an agent off without editing its config.</p>
         <ul id="agents" class="agents" aria-live="polite"></ul>
       </section>
+      <section class="group" aria-labelledby="openrig-title">
+        <div class="group-head">
+          <h3 id="openrig-title">OpenRig rigs</h3>
+        </div>
+        <label class="setting-row" for="openrig-toggle">
+          <span>
+            <strong>Follow OpenRig rigs</strong>
+            <span class="hint">One character per rig, driven by its chief-of-staff seat only.</span>
+          </span>
+          <input id="openrig-toggle" class="toggle" type="checkbox" role="switch">
+        </label>
+        <div class="setting-row static">
+          <span>
+            <strong id="openrig-url-label">Rig daemon address</strong>
+            <span class="hint">The OpenRig daemon's HTTP address. The default is this computer's daemon.</span>
+          </span>
+          <input id="openrig-url" type="text" spellcheck="false" placeholder="http://127.0.0.1:7433" aria-labelledby="openrig-url-label">
+        </div>
+        <p id="openrig-state" class="hint" aria-live="polite"></p>
+        <ul id="openrig-rigs" class="agents" aria-live="polite"></ul>
+      </section>
     </section>
 
     <section id="panel-wifi" class="card panel" role="tabpanel" aria-labelledby="tab-wifi" tabindex="0" hidden>

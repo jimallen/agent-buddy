@@ -1,4 +1,7 @@
 #include "NetworkManager.h"
+
+// Firmware only: this file is compiled by the ESP32 toolchain (arduino-cli), never by a host
+// build, so host clangd cannot resolve the Xtensa/IDF header chain it pulls in via Arduino.h.
 #include "Config.h"
 #include "Deadline.h"
 #include "DeviceCommands.h"
@@ -133,6 +136,8 @@ void NetworkManager::ensureIdentity() {
 }
 
 void NetworkManager::configureRoutes() {
+  // Badge and fleet packets share one handler: the body carries the packet prefix ('%' icon,
+  // '&' agents, '$' usage, '=' rigs), so a fleet update rides the same path as a badge one.
   const char* headers[] = {"Authorization", "X-Firmware-MD5"};
   server.collectHeaders(headers, 2);
   server.on("/", HTTP_GET, [] { server.send(200, "text/html", kSetupPage); });
@@ -142,6 +147,7 @@ void NetworkManager::configureRoutes() {
   server.on("/icon", HTTP_POST, [this] { handleBadge("Invalid icon"); });
   server.on("/agents", HTTP_POST, [this] { handleBadge("Invalid agents"); });
   server.on("/usage", HTTP_POST, [this] { handleBadge("Invalid usage"); });
+  server.on("/rigs", HTTP_POST, [this] { handleBadge("Invalid rigs"); });
   server.on("/orientation", HTTP_POST, [this] { handleOrientation(); });
   server.on("/character", HTTP_POST, [this] { handleCharacterResponse(); },
             [this] { handleCharacterBody(); });

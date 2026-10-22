@@ -523,3 +523,10 @@ code { background: var(--panel-2); padding: .1rem .35rem; border-radius: 6px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
+.rig { grid-template-columns: auto minmax(0, 1fr); }
+.rig-state-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--muted);
+}

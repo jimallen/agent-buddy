@@ -2,13 +2,13 @@ import contextlib
 import importlib.metadata
 import io
 import json
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
-from unittest import mock
 import zipfile
+from pathlib import Path
+from unittest import mock
 
 from tools import character_pack, firmware_artifacts, flash_release, package_release
 
@@ -40,7 +40,7 @@ class ReleaseBundleTests(unittest.TestCase):
                  "assets,data,0x40,0x410000,0xBE0000,\n")
         self.put("firmware/AgentCompanion/AgentCompanion.ino", "void setup() {}")
         self.put("characters/built-in.json", (ROOT / "characters/built-in.json").read_bytes())
-        for pack_id in ("claude", "copilot", "openclaw"):
+        for pack_id in json.loads((ROOT / "characters/built-in.json").read_text()):
             self.put(f"characters/{pack_id}/character.json", (ROOT / f"characters/{pack_id}/character.json").read_bytes())
             self.put(f"build/characters/{pack_id}.acpk", tiny_pack(pack_id))
         for path in firmware_artifacts.BINARIES:
@@ -88,12 +88,12 @@ class ReleaseBundleTests(unittest.TestCase):
             self.assertEqual(set(archive.namelist()), {*flash_release.PAYLOAD_NAMES, "SHA256SUMS"})
             self.assertTrue(all(info.date_time == (1980, 1, 1, 0, 0, 0) for info in archive.infolist()))
         with zipfile.ZipFile(characters) as archive:
-            self.assertEqual(archive.namelist(), ["claude.acpk", "copilot.acpk", "openclaw.acpk"])
+            self.assertEqual(archive.namelist(), ["claude.acpk", "copilot.acpk", "openclaw.acpk", "pi.acpk"])
             self.assertEqual(archive.read("openclaw.acpk"), tiny_pack("openclaw"))
         with zipfile.ZipFile(firmware) as archive:
             self.assertEqual(archive.read("bin/character-copilot.acpk"), tiny_pack("copilot"))
         self.assertEqual((firmware.parent / "SHA256SUMS").read_bytes(),
-                         package_release.checksum_file(dict(zip((firmware.name, characters.name), original))))
+                         package_release.checksum_file(dict(zip((firmware.name, characters.name), original, strict=False))))
         manifest = flash_release.verify_bundle(extracted)
         self.assertEqual(manifest["board"], "waveshare-amoled-175")
         self.assertIn("(waveshare-amoled-175)", (extracted / "INSTALL.txt").read_text())
@@ -275,7 +275,7 @@ class ReleaseBundleTests(unittest.TestCase):
         self.put("build/characters/custom.acpk", tiny_pack("custom"))
         _, _, characters = self.bundle()
         with zipfile.ZipFile(characters) as archive:
-            self.assertEqual(archive.namelist(), ["claude.acpk", "copilot.acpk", "openclaw.acpk"])
+            self.assertEqual(archive.namelist(), ["claude.acpk", "copilot.acpk", "openclaw.acpk", "pi.acpk"])
 
     def test_release_uses_real_builtin_packs_and_excludes_addons(self):
         files = {
@@ -326,9 +326,9 @@ class ReleaseBundleTests(unittest.TestCase):
             if calls == 1:
                 self.put("build/firmware/boot_app0.bin", b"changed")
 
-        with mock.patch.object(firmware_artifacts, "check", side_effect=change_after_first_check):
-            with self.assertRaisesRegex(ValueError, "changed"):
-                package_release.package(self.root, "1.2.3")
+        with (mock.patch.object(firmware_artifacts, "check", side_effect=change_after_first_check),
+              self.assertRaisesRegex(ValueError, "changed")):
+            package_release.package(self.root, "1.2.3")
         self.assertFalse((self.root / "build/release").exists())
 
     def test_invalid_names_and_versions(self):
@@ -349,7 +349,7 @@ class ReleaseBundleTests(unittest.TestCase):
             expected = [sys.executable, "-m", "esptool", "--chip", "esp32s3", "--port", "COM7",
                         "--baud", "460800", "write-flash", "--flash-mode", "keep",
                         "--flash-freq", "keep", "--flash-size", "16MB"]
-            for offset, filename in zip((0, 0x8000, 0xe000, 0x10000, 0x410000), flash_release.IMAGE_NAMES):
+            for offset, filename in zip((0, 0x8000, 0xe000, 0x10000, 0x410000), flash_release.IMAGE_NAMES, strict=False):
                 expected.extend((hex(offset), str(extracted / filename)))
             run.assert_called_once_with(expected, check=True)
             self.assertNotIn("erase-flash", expected)
@@ -364,6 +364,24 @@ class ReleaseBundleTests(unittest.TestCase):
             self.assertEqual(self.invoke(extracted, ["--port", "COM7"]), 1)
             self.assertEqual(self.invoke(extracted, ["--yes"]), 1)
             run.assert_not_called()
+
+    def test_keep_character_leaves_the_asset_partition_alone(self):
+        extracted, _, _ = self.bundle()
+        with mock.patch.object(flash_release, "require_dependencies"), \
+                mock.patch.object(flash_release.subprocess, "run") as run, \
+                mock.patch("builtins.input", return_value="FLASH"):
+            self.assertEqual(self.invoke(extracted, ["--port", "COM7", "--keep-character"]), 0)
+            expected = [sys.executable, "-m", "esptool", "--chip", "esp32s3", "--port", "COM7",
+                        "--baud", "460800", "write-flash", "--flash-mode", "keep",
+                        "--flash-freq", "keep", "--flash-size", "16MB"]
+            for offset, filename in zip((0, 0x8000, 0xe000, 0x10000, 0x410000), flash_release.IMAGE_NAMES, strict=False):
+                if filename == flash_release.CHARACTER_IMAGE:
+                    continue
+                expected.extend((hex(offset), str(extracted / filename)))
+            # The character image is the only one dropped, so the device keeps its own pack.
+            self.assertNotIn(str(extracted / flash_release.CHARACTER_IMAGE), expected)
+            self.assertEqual(len(expected), 24)
+            run.assert_called_once_with(expected, check=True)
 
     def test_validation_precedes_dependency_and_subprocess(self):
         extracted, _, _ = self.bundle()
@@ -384,9 +402,9 @@ class ReleaseBundleTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "pip install esptool==5.3.0"):
                 flash_release.require_dependencies()
             self.assertEqual(self.invoke(extracted, ["--list-ports"]), 1)
-        with mock.patch.object(importlib.metadata, "version", return_value="4.8"):
-            with self.assertRaisesRegex(ValueError, "5.3.0 is required"):
-                flash_release.require_dependencies()
+        with (mock.patch.object(importlib.metadata, "version", return_value="4.8"),
+              self.assertRaisesRegex(ValueError, "5.3.0 is required")):
+            flash_release.require_dependencies()
         with mock.patch.object(flash_release, "require_dependencies"), \
                 mock.patch.object(flash_release.subprocess, "run", side_effect=subprocess.CalledProcessError(2, "esptool")):
             self.assertEqual(self.invoke(extracted, ["--yes", "--port", "COM7"]), 1)

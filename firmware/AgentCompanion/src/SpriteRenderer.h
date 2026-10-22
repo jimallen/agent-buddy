@@ -16,10 +16,14 @@ inline int blinkRevealHalfHeight(uint8_t blend, int height) {
 // Renders base/patch packs: one base image per pose plus blink patches around the eyes.
 class SpriteRenderer {
  public:
+  // The fleet view renders rig columns through a third registered output: fleetOpenPatch
+  // and fleetOutput mirror the two presentation slots so a base-patch pack can render off
+  // the frame the display is transmitting.
   SpriteRenderer(uint16_t* firstOpenPatch, uint16_t* secondOpenPatch, uint16_t* patch,
                  size_t patchCapacity, uint16_t* firstOutput, uint16_t* secondOutput,
                  InflateSprite inflate, int outputWidth = kSpriteWidth,
-                 int outputHeight = kSpriteHeight);
+                 int outputHeight = kSpriteHeight,
+                 uint16_t* fleetOpenPatch = nullptr, uint16_t* fleetOutput = nullptr);
   bool render(const SpritePose& pose, uint16_t* frame);
   void invalidate();
   const char* error() const { return error_; }
@@ -27,13 +31,13 @@ class SpriteRenderer {
 
  private:
   bool decode(const SpriteBlock& block, uint16_t* output, size_t pixels, size_t width, size_t stride);
-  uint16_t* openPatches_[2];
+  uint16_t* openPatches_[3];
   uint16_t* patch_;
   size_t patchCapacity_;
-  uint16_t* outputs_[2];
+  uint16_t* outputs_[3];
   int outputWidth_, outputHeight_;
-  uint32_t outputKeys_[2] = {UINT32_MAX, UINT32_MAX};
-  uint32_t baseKeys_[2] = {UINT32_MAX, UINT32_MAX};
+  uint32_t outputKeys_[3] = {UINT32_MAX, UINT32_MAX, UINT32_MAX};
+  uint32_t baseKeys_[3] = {UINT32_MAX, UINT32_MAX, UINT32_MAX};
   InflateSprite inflate_;
   const char* error_ = nullptr;
 };

@@ -19,6 +19,7 @@ export class DeviceTransport {
   #badgeIcons: readonly AgentBadgeIconDefinition[] = [];
   #activeBadges: readonly AgentBadgeActive[] = [];
   #usage: readonly string[] = [];
+  #rigFleet = '';
   #installing = false;
   #mode: ConnectionMode = 'auto';
   #enabled = true;
@@ -150,6 +151,12 @@ export class DeviceTransport {
     this.#route();
   }
 
+  // The OpenRig fleet packet; an empty packet clears the device's fleet view.
+  setRigFleet(packet: string): void {
+    this.#rigFleet = packet;
+    this.#route();
+  }
+
   async reloadWifi(): Promise<void> {
     await this.#wifi.reload();
     this.#route();
@@ -260,11 +267,13 @@ export class DeviceTransport {
       this.#usb.setState(this.#desired);
       this.#usb.setAgentBadges(this.#badgeIcons, this.#activeBadges);
       this.#usb.setUsage(this.#usage);
+      this.#usb.setRigFleet(this.#rigFleet);
     } else {
       this.#wifi.setEnabled(true);
       this.#wifi.setState(this.#desired);
       this.#wifi.setAgentBadges(this.#badgeIcons, this.#activeBadges);
       this.#wifi.setUsage(this.#usage);
+      this.#wifi.setRigFleet(this.#rigFleet);
     }
     if (this.connected && this.character === 'none') this.#missing();
   }

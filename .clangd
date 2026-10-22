@@ -1,0 +1,32 @@
+# Host-side editors and linters get real ESP32 cross-compile includes by pointing clangd
+# at the compilation database the Arduino build writes: arduino-cli compile
+# --only-compilation-database --output-dir build/firmware . Without it, firmware sources
+# report every Arduino symbol as missing.
+If:
+  PathMatch: firmware/.*
+CompileFlags:
+  CompilationDatabase: build/firmware
+  # Xtensa-GCC flags the host clang driver does not know; stripped so parsing proceeds.
+  Remove:
+    - -mlongcalls
+    - -mdisable-hardware-atomics
+    - -fstrict-volatile-bitfields
+    - -fno-tree-switch-conversion
+    - -mtext-section-literals
+    - -mfix-esp32-psram-cache-issue
+    - -free
+    - -fno-ipa-sra
+  # The firmware is an ESP32-S3 Xtensa build. Host clangd cannot model that toolchain's
+  # include search (the IDF headers reference files only the cross-compiler provides, such
+  # as the xtensa hal.h and newlib's own sys/reent.h), so its diagnostics here are noise that
+  # says nothing about whether the sketch builds. The real gates are `bash tools/arduino.sh
+  # build` and the host test scripts in tools/test*.sh.
+Diagnostics:
+  Suppress: '*'
+
+# Host tools and the desktop engine build with clang++ -std=c++17; bare clangd otherwise
+# stops at pre-C++17 defaults and reports std::clamp et al. as missing.
+If:
+  PathMatch: (desktop|tools|tests)/.*\.(cpp|cc|cxx|h)
+CompileFlags:
+  Add: -std=c++17

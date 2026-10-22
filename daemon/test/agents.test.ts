@@ -489,7 +489,7 @@ async function withAgentsConfig<T>(path: string, run: () => Promise<T>): Promise
   }
 }
 
-test('all six agents update connection status from real activity and retain pending approval gates', async () => {
+test('all seven agents update connection status from real activity and retain pending approval gates', async () => {
   const {root, home, ctx, cleanup} = await fixture();
   try {
     const bin = join(root, 'bin');
@@ -502,7 +502,7 @@ test('all six agents update connection status from real activity and retain pend
     await withAgentsConfig(config, async () => {
       const events = new Map<AgentId, number>();
       const statuses = () => agentStatuses(context, new Map(), events);
-      assert.equal(statuses().length, 6);
+      assert.equal(statuses().length, 7);
       for (const agent of statuses()) {
         assert.equal(agent.installed, true, agent.id);
         assert.equal(agent.action?.kind, ['codex', 'hermes'].includes(agent.id) ? 'approve' : 'restart', agent.id);

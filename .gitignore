@@ -3,6 +3,8 @@ daemon/dist/
 daemon/node_modules/
 characters/openclaw/model/node_modules/
 characters/openclaw/renders/
+characters/pi/model/node_modules/
+characters/pi/renders/
 .deps/
 .venv/
 __pycache__/

@@ -63,7 +63,15 @@ async function api(path, {method = 'GET', body, type, binary = false, signal} = 
   const response = await fetch(path, {method, headers, body, signal});
   if (response.ok && binary) return response.arrayBuffer();
   const text = await response.text();
-  const data = text ? JSON.parse(text) : {};
+  let data = {};
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      if (!response.ok) throw new Error(`Request failed (${response.status}).`);
+      throw new Error('The service answered with an unreadable response.');
+    }
+  }
   if (!response.ok) throw new Error(data.error ?? `Request failed (${response.status}).`);
   return data;
 }
@@ -272,6 +280,59 @@ async function agentAction(id, action) {
   }
 }
 
+let openrigPending = false;
+
+// One list row per rig: its chief of staff is the face; dimmed when that seat is away.
+const rigStateColors = {
+  working: 'var(--accent)', attention: 'var(--warn)', idle: 'var(--good)',
+  complete: 'var(--good)', surprise: 'var(--accent-2)',
+};
+
+function renderOpenrig() {
+  const openrig = status?.openrig;
+  if (!openrig) return;
+  const toggle = $('openrig-toggle');
+  if (toggle && !openrigPending) toggle.checked = openrig.enabled;
+  const url = $('openrig-url');
+  if (url && document.activeElement !== url) url.value = openrig.url;
+  const summary = $('openrig-state');
+  const list = $('openrig-rigs');
+  if (!summary || !list) return;
+  list.hidden = !openrig.enabled || !openrig.rigs.length;
+  if (!openrig.enabled) summary.textContent = '';
+  else if (!openrig.reachable) summary.textContent = `The rig daemon is not answering at ${openrig.url}.`;
+  else summary.textContent = openrig.rigs.length
+    ? '' : 'No rigs found. A rig appears when it runs and has a chief-of-staff seat.';
+  list.replaceChildren(...openrig.rigs.map(rig => {
+    const item = document.createElement('li');
+    item.className = `agent rig${rig.present ? '' : ' disabled'}`;
+    const dot = document.createElement('span');
+    dot.className = 'rig-state-dot';
+    dot.style.background = rig.present ? (rigStateColors[rig.state] ?? 'var(--muted)') : 'var(--muted)';
+    const body = document.createElement('span');
+    body.className = 'agent-body';
+    body.textContent = rig.seatRef
+      ? `${rig.rigName} — ${rig.seatRef} ${rig.present ? (statePhrases[rig.state] ?? 'is idle') : 'is away'}`
+      : `${rig.rigName} — no chief-of-staff seat`;
+    item.append(dot, body);
+    return item;
+  }));
+}
+
+async function updateOpenrig(change, message) {
+  openrigPending = true;
+  try {
+    const result = await api('/api/openrig', {method: 'POST', type: 'application/json', body: JSON.stringify(change)});
+    if (status && result?.openrig) status.openrig = {...status.openrig, ...result.openrig, rigs: status.openrig?.rigs ?? []};
+    toast(message, 'success');
+  } catch (error) {
+    toast(error.message, 'error');
+  } finally {
+    openrigPending = false;
+  }
+  if (status) renderStatus();
+}
+
 function renderStatus() {
   if (!status) {
     $('fact-connection').textContent = 'Service offline';
@@ -326,6 +387,7 @@ function renderStatus() {
   const badgesToggle = $('badges-toggle');
   // Don't let an update that raced a click undo the switch the user just flipped.
   if (badgesToggle && !badgesPending) badgesToggle.checked = status.badges?.enabled !== false;
+  renderOpenrig();
 
   for (const button of document.querySelectorAll('#modes button')) {
     button.setAttribute('aria-checked', String(button.dataset.mode === status.mode));
@@ -385,8 +447,15 @@ function renderStatus() {
   }
 }
 
-const closeIcon = '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">'
-  + '<path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+// Parsed lazily: the web-alignment tests run this file in a DOM-less VM.
+let closeIconSvg;
+function removeIcon() {
+  closeIconSvg ??= new DOMParser().parseFromString(
+    '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">'
+      + '<path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+    'image/svg+xml').documentElement;
+  return closeIconSvg.cloneNode(true);
+}
 
 function renderCharacters() {
   const list = $('characters');
@@ -447,7 +516,7 @@ function renderCharacters() {
       remove.className = 'remove-character';
       remove.title = `Remove ${entry.name}`;
       remove.setAttribute('aria-label', `Remove ${entry.name}`);
-      remove.innerHTML = closeIcon;
+      remove.append(removeIcon());
       remove.disabled = Boolean(status?.installing);
       remove.addEventListener('click', () => removeCharacter(entry));
       item.append(remove);
@@ -1417,6 +1486,16 @@ $('badges-toggle')?.addEventListener('change', async event => {
   }
 });
 
+$('openrig-toggle')?.addEventListener('change', event => {
+  const enabled = event.target.checked;
+  void updateOpenrig({enabled}, enabled ? 'Now following this computer\'s rig daemon.' : 'OpenRig rigs hidden.');
+});
+
+$('openrig-url')?.addEventListener('change', event => {
+  const url = event.target.value.trim();
+  if (url && status?.openrig && url !== status.openrig.url) void updateOpenrig({url}, 'Rig daemon address saved.');
+});
+
 let pendingActions = new Map();
 
 // Lists the agents that still need a one-time step and announces each one as it finishes.
@@ -1546,7 +1625,13 @@ if (!token) {
   showLinkRequired(false);
 } else {
   events = new EventSource(`/api/events?token=${token}`);
-  events.addEventListener('status', event => onStatus(JSON.parse(event.data)));
+  events.addEventListener('status', event => {
+    try {
+      onStatus(JSON.parse(event.data));
+    } catch {
+      // A malformed status event is skipped; the next event or reconnect resyncs.
+    }
+  });
   events.addEventListener('error', async () => {
     if (!$('onboarding').hidden) onboarding.setOffline();
     status = null;

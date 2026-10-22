@@ -6,9 +6,9 @@ namespace copilot {
 enum class DeviceCommand {
   None, Invalid, Capture, Heap, Info, UploadCharacter, ConfigureWifi, ScanWifi,
   DefineAgentIcon, SetAgentBadges, SetUsage, GetOrientation, ConfigureOrientation,
-  Idle, Surprise, Working, Complete, Attention
+  SetRigFleet, Idle, Surprise, Working, Complete, Attention
 };
-constexpr unsigned kDeviceProtocol = 12;
+constexpr unsigned kDeviceProtocol = 13;
 
 inline const char* commandName(DeviceCommand command) {
   switch (command) {
@@ -33,14 +33,14 @@ inline DeviceCommand modeCommand(const char* name) {
   return DeviceCommand::Invalid;
 }
 
-// The serial prefix of a badge packet ('%' icon, '&' agents, '$' usage), or '\0'.
+// The serial prefix of a badge or fleet packet ('%' icon, '&' agents, '$' usage, '=' rigs),
+// or '\0'.
 inline char badgePrefix(DeviceCommand command) {
-  switch (command) {
-    case DeviceCommand::DefineAgentIcon: return '%';
-    case DeviceCommand::SetAgentBadges: return '&';
-    case DeviceCommand::SetUsage: return '$';
-    default: return '\0';
-  }
+  if (command == DeviceCommand::DefineAgentIcon) return '%';
+  if (command == DeviceCommand::SetAgentBadges) return '&';
+  if (command == DeviceCommand::SetUsage) return '$';
+  if (command == DeviceCommand::SetRigFleet) return '=';
+  return '\0';
 }
 
 class DeviceCommands {
@@ -78,6 +78,9 @@ class DeviceCommands {
     else if (packet_ == Packet::Agents)
       allowed = (byte >= 'a' && byte <= 'z') || (byte >= '0' && byte <= '9')
           || byte == '-' || byte == '=' || byte == ',';
+    else if (packet_ == Packet::Rigs)
+      allowed = (byte >= 'a' && byte <= 'z') || (byte >= '0' && byte <= '9')
+          || byte == '-' || byte == ':' || byte == ',';
     else if (packet_ == Packet::Usage)
       allowed = alphaNum || byte == ' ' || byte == ',' || byte == '.' || byte == ':' || byte == '|';
     else if (packet_ == Packet::Orientation)
@@ -96,7 +99,7 @@ class DeviceCommands {
   const char* payload() const { return text_; }
 
  private:
-  enum class Packet : uint8_t { Mode, Wifi, Icon, Agents, Usage, Orientation };
+  enum class Packet : uint8_t { Mode, Wifi, Icon, Agents, Usage, Orientation, Rigs };
   // A packet starts with its prefix and ends at '\n'; a mode packet ends with a mode name.
   struct PacketStart {
     char prefix;
@@ -110,6 +113,7 @@ class DeviceCommands {
     {'&', Packet::Agents, DeviceCommand::SetAgentBadges},
     {'$', Packet::Usage, DeviceCommand::SetUsage},
     {'^', Packet::Orientation, DeviceCommand::ConfigureOrientation},
+    {'=', Packet::Rigs, DeviceCommand::SetRigFleet},
   };
   struct ByteCommand {
     char byte;

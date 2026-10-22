@@ -5,6 +5,7 @@ import {isAbsolute, join} from 'node:path';
 // (see serviceEnvironment), so it edits the same files the agents read.
 export const agentHomeVariables = [
   'COPILOT_HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'GROK_HOME', 'HERMES_HOME', 'OPENCLAW_HOME',
+  'PI_CODING_AGENT_DIR',
 ] as const;
 
 type Environment = Readonly<Record<string, string | undefined>>;
@@ -22,6 +23,8 @@ export const copilotHome = (home: string, env: Environment = {}) => agentHome('C
 export const claudeHome = (home: string, env: Environment = {}) => agentHome('CLAUDE_CONFIG_DIR', '.claude', home, env);
 export const codexHome = (home: string, env: Environment = {}) => agentHome('CODEX_HOME', '.codex', home, env);
 export const grokHome = (home: string, env: Environment = {}) => agentHome('GROK_HOME', '.grok', home, env);
+// Pi keeps its agent directory in ~/.pi/agent, or wherever PI_CODING_AGENT_DIR points it.
+export const piHome = (home: string, env: Environment = {}) => agentHome('PI_CODING_AGENT_DIR', '.pi/agent', home, env);
 // Hermes keeps its home in %LOCALAPPDATA%\hermes on native Windows and in ~/.hermes elsewhere
 // (hermes_constants.py). HERMES_DATA_DIR_SUFFIX is added to either default.
 export function hermesHome(home: string, env: Environment = {}, platform: NodeJS.Platform = process.platform): string {

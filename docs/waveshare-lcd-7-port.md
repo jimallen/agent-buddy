@@ -1,0 +1,80 @@
+# Porting to the Waveshare ESP32-S3-Touch-LCD-7
+
+Target: the 7-inch 800x480 RGB board, so the fleet view can give each rig its own
+character instead of sharing the one flashed pack.
+
+This page is the working plan. Everything below was checked against Waveshare's
+wiki, the board schematic, their demo repo, and `esp-arduino-libs`; the parts not
+yet proven on hardware are marked **verify on arrival**.
+
+## Why this board is a different port, not another entry in `boards.json`
+
+The two supported boards push pixels to a small panel over SPI/QSPI: the firmware
+renders a frame into a buffer and `DisplayDma` clocks it out. The 7-inch board is
+a controller-less RGB panel: the LCD_CAM peripheral scans a framebuffer in PSRAM
+continuously, and there is no "send a frame" step at all. That is a different
+display path, not a different pin map, which is why it needs its own work.
+
+## Hardware facts
+
+| Item | Value |
+| --- | --- |
+| Module | ESP32-S3-WROOM-1-N16R8, 16 MB QIO flash + 8 MB **octal** PSRAM |
+| Panel | 800x480, RGB565 on 16 data lines, ST7262 class, no init commands |
+| Sync/clock | DE 5, VSYNC 3, HSYNC 46, PCLK 7 |
+| Data (R0-R4) | 1, 2, 42, 41, 40 |
+| Data (G0-G5) | 39, 0, 45, 48, 47, 21 |
+| Data (B0-B4) | 14, 38, 18, 17, 10 |
+| Timing used by Waveshare | PCLK 16 MHz; HFP 8, HPW 4, HBP 8; VFP 8, VPW 4, VBP 8; pclk_active_neg 1 |
+| Touch | Goodix GT911 at 0x5D on I2C (SDA 8, SCL 9, 400 kHz), INT 4, reset on expander |
+| IO expander | CH422G on the same I2C bus (see `src/boards/drivers/Ch422g.h`) |
+| Audio | **none** |
+| IMU | **none** — the orientation features must degrade, not crash |
+| SD card | SPI MOSI 11, SCK 12, MISO 13, CS on CH422G EXIO4 |
+| Native USB | GPIO19/20 through a mux; CH422G EXIO5 low keeps native USB for the daemon |
+
+## Expander sequencing (done)
+
+`src/boards/drivers/Ch422g.h` implements the chip with a host-tested bus seam:
+
+1. `begin()`: `WR_SET = IO_OE`, `WR_OC = 0`, all levels low.
+2. `set(PanelPower, true)` — raise LCD_VDD_EN.
+3. `pulsePanelReset()` — drive LCD_RST low, then high.
+4. `set(TouchReset, true)`, then the GT911 address-select sequence.
+5. `set(Backlight, true)` last, once the panel is configured.
+
+The backlight is a plain enable (AP3032 boost), **not PWM**: there is no dimming
+path on this board, so `setDisplayBrightness` becomes on/off.
+
+## Work items, in order
+
+1. **Board target** — add `waveshare-lcd-70` to `firmware/boards.json` with its own
+   define and FQBN, plus `src/boards/waveshare_lcd_70/{BoardConfig.h,BoardDrivers.h}`.
+   Do this last, once it compiles, because CI builds every listed board.
+2. **RGB scanout** — replace the `DisplayDma` path for this board with
+   `Arduino_ESP32RGBPanel` + a PSRAM framebuffer, and draw the existing 466x466
+   content centred in 800x480. `ScreenTransform` already scales content to a panel,
+   so the renderer should not need changes.
+3. **Touch** — drive the GT911 (`TouchDrvGT911.hpp` ships in the vendored SensorLib)
+   with INT 4 and reset on EXIO1.
+4. **No IMU** — `OrientationSensor` must report "unavailable" rather than fail;
+   rotation then comes only from the settings menu.
+5. **No audio** — `audioOutput()` needs a silent implementation on this board.
+6. **SD character packs** — the reason for the port: stream packs from the card so a
+   rig's harness can have its own character. Needs a pack loader that can read from
+   SD, and a `pack` field in the fleet packet (`label:state:agent:pack`).
+
+## Open questions to settle on the bench
+
+- Whether `pclk_active_neg` wants 1 (Waveshare's board config) or 0 (their positional
+  constructor example). Both are reported to work; start with 1.
+- The GT911 address-select timing (INT low across reset selects 0x5D).
+- RS485 TX/RX is labelled 15/16 or 16/15 depending on the source.
+- Confirm the flash is really 16 MB (`esptool flash_id`); the schematic silkscreen
+  and some docs disagree.
+
+## Testing without the board
+
+The expander is host-tested (`tests/test_ch422g.cpp`, run by
+`tools/test_device_inputs.sh`). The same seam pattern works for the panel: keep the
+Arduino_GFX call behind `displayPanel()` so host tests only see our own types.

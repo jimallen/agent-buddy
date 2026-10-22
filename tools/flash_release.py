@@ -148,13 +148,23 @@ def require_dependencies():
         raise ValueError(f"esptool {ESPTOOL_VERSION} is required (found {version}). Run: {command}")
 
 
-def flash_command(root, manifest, port):
+CHARACTER_IMAGE = "bin/character-copilot.acpk"
+
+
+def flash_command(root, manifest, port, keep_character=False):
+    """The esptool write-flash command for a bundle.
+
+    keep_character leaves the asset partition alone so the character already on the device
+    survives the update; a full install writes the bundle's default pack.
+    """
     command = [
         sys.executable, "-m", "esptool", "--chip", "esp32s3", "--port", port,
         "--baud", "460800", "write-flash", "--flash-mode", "keep",
         "--flash-freq", "keep", "--flash-size", "16MB",
     ]
     for image in manifest["images"]:
+        if keep_character and image["file"] == CHARACTER_IMAGE:
+            continue
         command.extend((hex(image["offset"]), str(Path(root) / image["file"])))
     return command
 
@@ -163,6 +173,8 @@ def main(argv=None, root=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", help="Serial port, for example COM3 or /dev/ttyACM0")
     parser.add_argument("--yes", action="store_true", help="Explicitly confirm replacement without prompting")
+    parser.add_argument("--keep-character", action="store_true",
+                        help="Update the firmware and leave the character already on the device in place")
     actions = parser.add_mutually_exclusive_group()
     actions.add_argument("--verify-only", action="store_true", help="Validate offline; no dependencies or hardware needed")
     actions.add_argument("--list-ports", action="store_true", help="List serial ports without flashing")
@@ -195,7 +207,9 @@ def main(argv=None, root=None):
         print(WARNING)
         if not args.yes and input("Type FLASH to replace the device firmware: ").strip() != "FLASH":
             raise ValueError("Flash cancelled; confirmation was not FLASH.")
-        subprocess.run(flash_command(root, manifest, args.port), check=True)
+        if args.keep_character:
+            print("Keeping the character already installed on the device.")
+        subprocess.run(flash_command(root, manifest, args.port, args.keep_character), check=True)
         return 0
     except (OSError, ValueError, KeyError, TypeError, EOFError, KeyboardInterrupt, subprocess.CalledProcessError) as error:
         print(f"Installer error: {error}", file=sys.stderr)

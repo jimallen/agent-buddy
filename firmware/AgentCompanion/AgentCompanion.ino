@@ -20,6 +20,7 @@
 #include "src/CharacterMotion.h"
 #include "src/AudioPlayer.h"
 #include "src/AgentBadges.h"
+#include "src/RigFleet.h"
 #include "src/CharacterEffects.h"
 #include "src/CharacterFrame.h"
 #include "src/Deadline.h"
@@ -45,6 +46,20 @@ SpriteRenderer* patchRenderer = nullptr;
 FullFrameRenderer* fullFrameRenderer = nullptr;
 CharacterEffects* effects;
 AgentBadges agentBadges;
+RigFleet rigFleet;
+// The fleet composites into its own persistent frame, declared here so the presenter can
+// display that one pointer instead of the alternating presentation buffers.
+uint16_t* fleetPresentation = nullptr;
+// The fleet view renders each rig's chief of staff into a column.
+CharacterMotion* fleetMotions = nullptr;
+uint16_t* fleetScratch = nullptr;
+uint32_t fleetRenderedRevision = 0;
+uint32_t fleetLayoutRevision = 0;
+int64_t fleetNextStepAt = 0;
+int64_t fleetLastStep[kMaxRigSlots] = {};
+CharacterMode fleetApplied[kMaxRigSlots] = {CharacterMode::Idle, CharacterMode::Idle,
+                                            CharacterMode::Idle, CharacterMode::Idle};
+unsigned fleetCursor = 0;
 tinfl_decompressor inflater;
 alignas(4) uint8_t inflateHistory[TINFL_LZ_DICT_SIZE];
 SpritePredictor spritePredictor;
@@ -131,6 +146,161 @@ void* allocate(size_t bytes, uint32_t capabilities, const char* error) {
   return result;
 }
 
+
+uint16_t rigLabelColor(CharacterMode mode, bool present) {
+  if (!present) return swapBytes(rgb565(120, 124, 136));
+  switch (mode) {
+    case CharacterMode::Working: return swapBytes(rgb565(41, 151, 255));
+    case CharacterMode::Attention: return swapBytes(rgb565(255, 181, 71));
+    case CharacterMode::Complete: return swapBytes(rgb565(94, 224, 160));
+    case CharacterMode::Surprise: return swapBytes(rgb565(143, 134, 255));
+    default: return swapBytes(rgb565(160, 165, 180));
+  }
+}
+
+// Height reserved above the rig columns for the agent/subagent badge strip, and its geometry.
+constexpr int kRigBadgeSize = 24;
+constexpr int kRigBadgeGap = 5;
+constexpr int kRigBadgeTop = 3;
+
+// Draws one agent's 24x24 badge mask (the same icons the badge strip uses) so a rig column can
+// name the harness behind that rig's chief of staff. Skips silently when the daemon has not
+// sent that icon.
+void drawRigAgentIcon(const char* id, uint16_t* frame, int x, int y, int size) {
+  if (!id || !id[0] || !frame) return;
+  const AgentBadgesSnapshot badges = agentBadges.snapshot();
+  const AgentBadgeIcon* icon = nullptr;
+  for (uint8_t index = 0; index < badges.iconCount; ++index) {
+    if (badges.icons[index].used && std::strcmp(badges.icons[index].id, id) == 0) {
+      icon = &badges.icons[index];
+      break;
+    }
+  }
+  if (!icon) return;
+  for (int py = 0; py < size; ++py) {
+    const int sourceY = py * kRigBadgeSize / size;
+    for (int px = 0; px < size; ++px) {
+      const int sourceX = px * kRigBadgeSize / size;
+      const uint8_t bits = icon->mask[sourceY * 3 + sourceX / 8];
+      if (!(bits & (0x80 >> (sourceX % 8)))) continue;
+      const int fx = x + px;
+      const int fy = y + py;
+      if (fx < kCharacterFrameWidth && fy < kCharacterFrameHeight)
+        frame[fy * kCharacterFrameWidth + fx] = icon->color;
+    }
+  }
+}
+
+// The floating agent badges, laid out as a strip across the top of the fleet view: one 24x24
+// icon per active agent or subagent, so the fleet still shows who is working on it.
+int rigBadgeStrip(uint16_t* frame) {
+  const AgentBadgesSnapshot badges = agentBadges.snapshot();
+  if (!badges.activeCount) return 0;
+  int x = 6;
+  for (uint8_t index = 0; index < badges.activeCount && index < kMaxActiveAgentBadges; ++index) {
+    const ActiveAgentBadge& active = badges.active[index];
+    const AgentBadgeIcon* icon = nullptr;
+    for (uint8_t k = 0; k < badges.iconCount; ++k) {
+      if (badges.icons[k].used && std::strcmp(badges.icons[k].id, active.id) == 0) {
+        icon = &badges.icons[k];
+        break;
+      }
+    }
+    if (!icon) continue;
+    for (int py = 0; py < kRigBadgeSize; ++py) {
+      for (int px = 0; px < kRigBadgeSize; ++px) {
+        const uint8_t bits = icon->mask[py * 3 + px / 8];
+        if (!(bits & (0x80 >> (px % 8)))) continue;
+        const int fx = x + px;
+        const int fy = kRigBadgeTop + py;
+        if (fx < kCharacterFrameWidth && fy < kCharacterFrameHeight)
+          frame[fy * kCharacterFrameWidth + fx] = icon->color;
+      }
+    }
+    x += kRigBadgeSize + kRigBadgeGap;
+    if (x >= kCharacterFrameWidth - kRigBadgeSize) break;
+  }
+  return kRigBadgeTop + kRigBadgeSize + 4;
+}
+
+// The fleet is a status board: render columns only on fleet-packet or heartbeat changes,
+// never per frame tick. frame->pixels keeps the last picture; the ping-pong buffers share it
+// by copying when the presentation buffer swaps.
+bool renderFleetFrame(CharacterSprite& sprite, Frame* frame, const PackHeader& pack,
+                      const RigFleetSnapshot& fleet, int64_t start) {
+  if (!fleetMotions) {
+    fleetMotions = static_cast<CharacterMotion*>(allocate(
+        sizeof(CharacterMotion) * kMaxRigSlots, MALLOC_CAP_SPIRAM, "Fleet motion allocation failed."));
+    for (size_t index = 0; index < kMaxRigSlots; ++index) new (&fleetMotions[index]) CharacterMotion(esp_random());
+  }
+  if (!fleetScratch) {
+    fleetScratch = static_cast<uint16_t*>(allocate(
+        sizeof(uint16_t) * kCharacterFrameWidth * kCharacterFrameHeight, MALLOC_CAP_SPIRAM,
+        "Fleet scratch allocation failed."));
+  }
+  // The fleet composites into its own persistent frame that the presenter displays directly.
+  // Rendering there (instead of into the alternating presentation buffers) is what keeps the
+  // columns from flashing: there is no second copy that can hold stale content.
+  if (!fleetPresentation) {
+    fleetPresentation = static_cast<uint16_t*>(allocate(
+        sizeof(uint16_t) * kCharacterFrameWidth * kCharacterFrameHeight, MALLOC_CAP_SPIRAM,
+        "Fleet presentation allocation failed."));
+    std::memset(fleetPresentation, 0, sizeof(uint16_t) * kCharacterFrameWidth * kCharacterFrameHeight);
+  }
+  uint16_t* const target = fleetPresentation;
+  if (fleet.revision != fleetRenderedRevision) {
+    fleetRenderedRevision = fleet.revision;
+    if (fleet.layoutRevision != fleetLayoutRevision) {
+      fleetLayoutRevision = fleet.layoutRevision;
+      fleetCursor = 0;
+      std::memset(target, 0, sizeof(uint16_t) * kCharacterFrameWidth * kCharacterFrameHeight);
+    }
+    for (size_t index = 0; index < fleet.count; ++index) {
+      const CharacterMode requested = fleet.slots[index].mode;
+      if (fleetApplied[index] == requested) continue;
+      // The one fleet sound: a chief of staff entering needs-input.
+      if (requested == CharacterMode::Attention && rigFleet.fleetMode()) queueAudioCue(AudioCue::Attention);
+      if (!fleetMotions[index].setMode(requested)) fatal(fleetMotions[index].error());
+      fleetApplied[index] = requested;
+    }
+  }
+  // A status board, not a 30fps animation: step every rig at a calm 1 Hz so all columns are
+  // always complete, and skip the work entirely in between so the idle task keeps its time.
+  if (start < fleetNextStepAt) return true;
+  fleetNextStepAt = start + 1000000;
+  const int columnWidth = kCharacterFrameWidth / fleet.count;
+  const int artTop = (kCharacterFrameHeight - kFrameHeight) / 2;
+  // The badge strip, when agents are active, pushes the columns down so it never overlaps.
+  const int stripBottom = rigBadgeStrip(target);
+  const int top = stripBottom > 0 ? stripBottom : 4;
+  for (size_t index = 0; index < fleet.count; ++index) {
+    const RigSlot& slot = fleet.slots[index];
+    stepCharacterMotion(fleetMotions[index], (start - fleetLastStep[index]) / 1000000.0, pack);
+    fleetLastStep[index] = start;
+    const CharacterState state = fleetMotions[index].state();
+    if (index == 0) frame->state = state;
+    if (!sprite.render(state, fleetScratch)) return false;
+    const int x0 = static_cast<int>(index) * columnWidth;
+    const int height = kCharacterFrameHeight - 26 - top;
+    blitRigColumn(fleetScratch + artTop * kCharacterFrameWidth, kCharacterFrameWidth, kFrameHeight,
+                  target, kCharacterFrameWidth, x0, top, columnWidth, height,
+                  slot.present ? 1 : 0);
+    const char* label = slot.label;
+    const int labelWidth = static_cast<int>(std::strlen(label)) * 6;
+    drawRigLabel(target, kCharacterFrameWidth, kCharacterFrameHeight,
+                 x0 + std::max(0, (columnWidth - labelWidth) / 2), kCharacterFrameHeight - 16,
+                 label, rigLabelColor(slot.mode, slot.present));
+    // The harness behind this rig's chief of staff: Claude Code, Pi, Codex and so on. One
+    // character pack serves every column, so this icon is what tells the rigs apart.
+    constexpr int kRigAgentIconSize = 18;
+    drawRigAgentIcon(slot.agent, target,
+                     x0 + (columnWidth - kRigAgentIconSize) / 2,
+                     kCharacterFrameHeight - 16 - 4 - kRigAgentIconSize,
+                     kRigAgentIconSize);
+  }
+  return true;
+}
+
 bool inflatePose(uint8_t* output, size_t outputSize, const uint8_t* input, size_t inputSize, size_t width, size_t stride) {
   if (!spritePredictor.reset(output, outputSize, width, stride)) return false;
   tinfl_init(&inflater);
@@ -181,13 +351,22 @@ void animate(void*) {
     portEXIT_CRITICAL(&renderLock);
     // Installation erases the mapped pack and always restarts the device afterwards.
     if (paused) vTaskSuspend(nullptr);
-    const bool rendered = sprite.render(frame->state, frame->pixels);
+    const RigFleetSnapshot fleet = rigFleet.snapshot();
+    const bool rendered = fleet.count
+        ? renderFleetFrame(sprite, frame, pack, fleet, start)
+        : sprite.render(frame->state, frame->pixels);
     portENTER_CRITICAL(&renderLock);
     renderActive = false;
     portEXIT_CRITICAL(&renderLock);
     if (!rendered) fatal(sprite.error());
     const int64_t effectStart = esp_timer_get_time();
-    if (!effects->render(frame->state, frame->pixels)) fatal(effects->error());
+    // CharacterEffects (orbits, Zs and the floating agent/subagent badges) owns frames[0] and
+    // frames[1] only, so it runs in the single-character view. The fleet draws those badges
+    // through its own strip inside renderFleetFrame.
+    if (!fleet.count && !effects->render(frame->state, frame->pixels)) {
+      fatal(effects->error());
+    }
+    const int64_t effectEnd = esp_timer_get_time();
     frame->effectsUs = restoreUs + esp_timer_get_time() - effectStart;
     frame->renderUs = esp_timer_get_time() - start;
     frame->decodeUs = fullFrame ? 0 : patchRenderer->decodeUs;
@@ -245,8 +424,10 @@ bool captureFrame(const Frame& frame) {
     return false;
   }
   const char end[] = "\nEND_FRAME\n";
+  // Capture what the display actually shows: in fleet mode that is the fleet's own frame.
+  const uint16_t* pixels = rigFleet.count() && fleetPresentation ? fleetPresentation : frame.pixels;
   return writeCapture(reinterpret_cast<const uint8_t*>(header), length)
-      && writeCapture(reinterpret_cast<const uint8_t*>(frame.pixels), bytes)
+      && writeCapture(reinterpret_cast<const uint8_t*>(pixels), bytes)
       && writeCapture(reinterpret_cast<const uint8_t*>(end), sizeof(end) - 1);
 }
 
@@ -996,6 +1177,11 @@ bool handleBadgePacket(const char* packet, char* response, size_t responseSize) 
     snprintf(response, responseSize, "USAGE accepted=%u", static_cast<unsigned>(agentBadges.usage().count));
     return true;
   }
+  if (packet[0] == '=') {
+    if (!rigFleet.setPacket(packet + 1)) return reject();
+    snprintf(response, responseSize, "RIGS accepted=%u", static_cast<unsigned>(rigFleet.count()));
+    return true;
+  }
   snprintf(response, responseSize, "COMMAND_ERROR invalid badge packet");
   return false;
 }
@@ -1113,7 +1299,8 @@ void processCommand(DeviceCommand command, const DeviceCommands& parser, const F
       break;
     case DeviceCommand::DefineAgentIcon:
     case DeviceCommand::SetAgentBadges:
-    case DeviceCommand::SetUsage: {
+    case DeviceCommand::SetUsage:
+    case DeviceCommand::SetRigFleet: {
       char response[96];
       char packet[196];
       snprintf(packet, sizeof(packet), "%c%s", badgePrefix(command), parser.payload());
@@ -1226,11 +1413,22 @@ void startCharacter() {
         patchBytes, "Second open-eye cache allocation failed."));
     auto* patch = static_cast<uint16_t*>(allocatePatchBuffer(
         patchBytes, "Blink patch allocation failed."));
+    auto* fleetOpenPatch = static_cast<uint16_t*>(allocatePatchBuffer(
+        patchBytes, "Fleet open cache allocation failed."));
+    fleetScratch = static_cast<uint16_t*>(allocatePatchBuffer(
+        kCharacterFrameWidth * kCharacterFrameHeight * sizeof(uint16_t),
+        "Fleet frame allocation failed."));
     patchRenderer = new (allocate(sizeof(SpriteRenderer), MALLOC_CAP_INTERNAL,
         "Renderer allocation failed.")) SpriteRenderer(
             firstOpenPatch, secondOpenPatch, patch, patchPixels, frames[0].pixels,
-            frames[1].pixels, inflatePose, kCharacterFrameWidth, kCharacterFrameHeight);
+            frames[1].pixels, inflatePose, kCharacterFrameWidth, kCharacterFrameHeight,
+            fleetOpenPatch, fleetScratch);
   }
+  // The fleet renders rig poses into its own full-size frame and composites columns into
+  // the presentation frame. Both buffers exist before any renderer registers them.
+  if (!fleetScratch) fleetScratch = static_cast<uint16_t*>(allocate(
+      kCharacterFrameWidth * kCharacterFrameHeight * sizeof(uint16_t), MALLOC_CAP_SPIRAM,
+      "Fleet frame allocation failed."));
   // Leave internal RAM for Wi-Fi bursts; restoration records do not require DMA.
   void* effectMemory = allocate(sizeof(CharacterEffects), MALLOC_CAP_SPIRAM, "Effects allocation failed.");
   auto* badgeOverlay = static_cast<uint16_t*>(allocate(
@@ -1401,8 +1599,11 @@ void loop() {
   previousPresentation = start;
   uint32_t transferUs = 0;
   if (!settings.isOpen() && !prompt) {
+    // While the fleet view is on, the presenter shows the fleet's own persistent frame; that
+    // single source is what keeps the columns from flashing between renders.
+    const uint16_t* pixels = rigFleet.count() && fleetPresentation ? fleetPresentation : frame->pixels;
     if (!display.flushFrame(
-            frame->pixels, kCharacterFrameX, 0, kCharacterFrameWidth, kCharacterFrameHeight))
+            pixels, kCharacterFrameX, 0, kCharacterFrameWidth, kCharacterFrameHeight))
       fatal(display.error());
   } else if (orientationChanged) {
     flushDisplay();
@@ -1421,7 +1622,7 @@ void loop() {
   if (frame->state.eventId != previousEvent || frame->state.mode != previousMode) {
     logMessage("STATE mode=%s requested=%s event=%u\n", modeName(frame->state.mode),
                   modeName(frame->state.requestedMode), frame->state.eventId);
-    if (frame->state.mode != previousMode) queueModeCue(frame->state.mode);
+    if (frame->state.mode != previousMode && !rigFleet.count()) queueModeCue(frame->state.mode);
     previousEvent = frame->state.eventId;
     previousMode = frame->state.mode;
   }

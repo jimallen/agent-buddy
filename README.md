@@ -768,9 +768,12 @@ The button installs the firmware release that matches the companion service's ve
 For a device that does not answer, choose its board first; firmware for a different board can stop the device.
 **USB release install or recovery** is only for a new device or one that does not answer. Without the desktop app, follow [Step 1](#step-1-flash-the-firmware)
 with the new release's `agent-buddy-v<version>-firmware.zip`. Both
-ways keep the device's Wi-Fi settings and write the Copilot character. When the
-desktop app installs the firmware, it then installs your previous character again.
-If you flash without the desktop app, reinstall your character afterward from the settings page or with `npm run character <name>`.
+ways keep the device's Wi-Fi settings. A release bundle writes the Copilot
+character unless you pass `--keep-character` to `flash.py`, which updates the
+firmware and leaves the pack already on the device in place. When the desktop app
+installs the firmware, it then installs your previous character again. If you do
+flash over the character, reinstall yours from the settings page or with
+`npm run character <name>`.
 
 **Firmware over Wi-Fi.** When the device is on Wi-Fi and has firmware with
 protocol 9 or later, open the settings page's **Device** tab. The **Device

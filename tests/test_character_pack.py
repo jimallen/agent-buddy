@@ -1,3 +1,4 @@
+# pyright: reportMissingImports=false
 import hashlib
 import json
 from pathlib import Path
@@ -10,7 +11,7 @@ import unittest.mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
-import character_pack as packs
+import character_pack as packs  # noqa: E402 (after the tools/ path insert above)
 
 
 class CharacterPackTests(unittest.TestCase):
@@ -19,6 +20,7 @@ class CharacterPackTests(unittest.TestCase):
         cls.paths = packs.build()
         cls.copilot = (ROOT / "build/characters/copilot.acpk").read_bytes()
         cls.openclaw = (ROOT / "build/characters/openclaw.acpk").read_bytes()
+        cls.pi = (ROOT / "build/characters/pi.acpk").read_bytes()
 
     def test_built_in_packs_wrap_the_validated_exports_unchanged(self):
         copilot = packs.decode(self.copilot, 0xDE0000)
@@ -27,12 +29,17 @@ class CharacterPackTests(unittest.TestCase):
                          ("copilot", "Copilot", packs.LAYOUT_BASE_PATCH))
         self.assertEqual((openclaw["id"], openclaw["name"], openclaw["layout"]),
                          ("openclaw", "OpenClaw", packs.LAYOUT_FULL_FRAME))
+        pi = packs.decode(self.pi, 0xDE0000)
+        self.assertEqual((pi["id"], pi["name"], pi["layout"]), ("pi", "Pi", packs.LAYOUT_FULL_FRAME))
         for pack, source in ((self.copilot, ROOT / "characters/copilot/frames.bin"),
-                             (self.openclaw, ROOT / "characters/openclaw/frames.bin")):
+                             (self.openclaw, ROOT / "characters/openclaw/frames.bin"),
+                             (self.pi, ROOT / "characters/pi/frames.bin")):
             data_offset, data_bytes = struct.unpack_from("<II", pack, 140)
             self.assertEqual(pack[data_offset:data_offset + data_bytes], source.read_bytes())
         self.assertEqual(struct.unpack_from("<BBHB", self.openclaw, 74), (9, 23, 1200, 1))
         self.assertEqual(struct.unpack_from("<H", self.openclaw, 72)[0], 1300)
+        self.assertEqual(struct.unpack_from("<BBHB", self.pi, 74), (9, 23, 1200, 1))
+        self.assertEqual(struct.unpack_from("<H", self.pi, 72)[0], 1100)
 
     def test_build_is_deterministic_and_emits_host_symbols(self):
         before = {path: path.stat().st_mtime_ns for path in self.paths.values()}
@@ -40,11 +47,12 @@ class CharacterPackTests(unittest.TestCase):
             packs.build()
         self.assertEqual({path: path.stat().st_mtime_ns for path in self.paths.values()}, before)
         assembly = (ROOT / packs.HOST_ASSEMBLY).read_text()
-        for symbol in ("kCopilotPack", "kCopilotPackEnd", "kOpenClawPack", "kOpenClawPackEnd"):
+        for symbol in ("kCopilotPack", "kCopilotPackEnd", "kOpenClawPack", "kOpenClawPackEnd",
+                       "kPiPack", "kPiPackEnd"):
             self.assertIn(f"{symbol}:", assembly)
 
-    def test_only_the_three_original_characters_are_built_in(self):
-        expected = ["claude", "copilot", "openclaw"]
+    def test_the_four_characters_of_the_roster_are_built_in(self):
+        expected = ["claude", "copilot", "openclaw", "pi"]
         self.assertEqual(json.loads((ROOT / "characters/built-in.json").read_text()), expected)
         self.assertEqual([path.name for path in packs.discover_characters()], expected)
         self.assertEqual(sorted(path.stem for path in self.paths.values()), expected)

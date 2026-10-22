@@ -8,6 +8,9 @@ import {isUsageWindow, type UsageWindow} from './usage-tracker.js';
 export const desktopBackdrops = ['device', 'none'] as const;
 export type DesktopBackdrop = typeof desktopBackdrops[number];
 
+// Where the OpenRig fleet view comes from when it is enabled.
+export const defaultOpenrigUrl = 'http://127.0.0.1:7433';
+
 export interface DisplaySettings {
   showAgentBadges: boolean;
   // Whether the desktop app shows its character; the device is unaffected.
@@ -21,6 +24,10 @@ export interface DisplaySettings {
   // AI credits and tokens at the bottom of the screen, on the device and the desktop.
   showUsage: boolean;
   usageWindow: UsageWindow;
+  // One character per OpenRig rig, driven by that rig's chief-of-staff seat. Off by
+  // default; the daemon address is editable for a rig fleet elsewhere on the LAN.
+  openrigEnabled: boolean;
+  openrigUrl: string;
 }
 
 export const defaultDisplaySettings: DisplaySettings = {
@@ -32,7 +39,13 @@ export const defaultDisplaySettings: DisplaySettings = {
   desktopVolume: 30,
   showUsage: true,
   usageWindow: 'today',
+  openrigEnabled: false,
+  openrigUrl: defaultOpenrigUrl,
 };
+
+export function isOpenrigUrl(value: unknown): value is string {
+  return typeof value === 'string' && /^https?:\/\/.+/.test(value);
+}
 
 export function isDesktopVolume(value: unknown): value is number {
   return Number.isInteger(value) && (value as number) >= 0 && (value as number) <= 100;
@@ -56,6 +69,8 @@ export function loadDisplaySettingsSync(path = displaySettingsPath()): DisplaySe
       desktopVolume: isDesktopVolume(parsed.desktopVolume) ? parsed.desktopVolume : defaultDisplaySettings.desktopVolume,
       showUsage: parsed.showUsage !== false,
       usageWindow: isUsageWindow(parsed.usageWindow) ? parsed.usageWindow : defaultDisplaySettings.usageWindow,
+      openrigEnabled: parsed.openrigEnabled === true,
+      openrigUrl: isOpenrigUrl(parsed.openrigUrl) ? parsed.openrigUrl : defaultDisplaySettings.openrigUrl,
     };
   } catch {
     return {...defaultDisplaySettings};

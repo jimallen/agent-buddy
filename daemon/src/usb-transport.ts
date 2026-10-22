@@ -19,6 +19,7 @@ import {
   type AgentBadgeIconDefinition,
 } from './agent-badges.js';
 import {shouldSendUsage, usagePacket} from './usage-tracker.js';
+import {shouldSendRigs} from './rig-coordinator.js';
 import {parseBoardLine} from './firmware-release.js';
 import {
   parseWifiProvisioningResponse,
@@ -28,7 +29,8 @@ import {
 
 const networkRefreshMs = 5000;
 // The newest firmware protocol this daemon knows; see kDeviceProtocol in DeviceCommands.h.
-const maxProtocol = 12;
+// Protocol 12 shipped the character patch changes; 13 adds the rig fleet packet.
+const maxProtocol = 13;
 // Requests in a row without an answer before the port counts as dead. A device that restarts
 // can leave the old port open but silent; closing it lets discovery or Wi-Fi take over.
 const deadLinkTimeouts = 3;
@@ -77,6 +79,8 @@ export class UsbTransport {
   #activeSignature = '';
   // What the device shows now; null until it is sent after a connect or restart.
   #usageSignature: string | null = null;
+  // The rig fleet the device shows now; null until it is sent after a connect or restart.
+  #rigSignature: string | null = null;
   #enabled = true;
   #character: string | null = null;
   #adaptivePatchRam = false;
@@ -232,6 +236,15 @@ export class UsbTransport {
       .catch(error => console.error(`[usb] ${this.#message(error)}`));
   }
 
+  // The OpenRig fleet view: one column per rig, or cleared by an empty packet. Devices
+  // running firmware before protocol 13 have no fleet view and are left alone.
+  setRigFleet(packet: string): void {
+    if (!shouldSendRigs(this.#protocol) || packet === this.#rigSignature) return;
+    this.#commands = this.#commands
+      .then(() => this.#sendRigFleet(packet))
+      .catch(error => console.error(`[usb] ${this.#message(error)}`));
+  }
+
   // Disabling releases the serial port so a cable can provide power only.
   async setEnabled(enabled: boolean): Promise<void> {
     this.#enabled = enabled;
@@ -328,6 +341,7 @@ export class UsbTransport {
       this.#iconSignature = '';
       this.#activeSignature = '';
       this.#usageSignature = null;
+      this.#rigSignature = null;
       this.#answered = true;
       console.log(`[usb] ${info}`);
       console.log(`[usb] connected ${path}`);
@@ -366,6 +380,14 @@ export class UsbTransport {
     const lines = signature ? signature.split('|') : [];
     await this.#request(usagePacket(lines), line => line === `USAGE accepted=${lines.length}`);
     this.#usageSignature = signature;
+  }
+
+  async #sendRigFleet(packet: string): Promise<void> {
+    if (!this.connected || !shouldSendRigs(this.#protocol) || packet === this.#rigSignature) return;
+    const count = packet ? packet.split(',').length : 0;
+    await this.#request(`=${packet}\n`, line => line === `RIGS accepted=${count}`);
+    this.#rigSignature = packet;
+    console.log(`[rigs] ${count} rig column(s) via usb`);
   }
 
   async configureWifi(ssid: string, password: string): Promise<WifiConfig> {
@@ -619,6 +641,7 @@ export class UsbTransport {
     this.#iconSignature = '';
     this.#activeSignature = '';
     this.#usageSignature = null;
+    this.#rigSignature = null;
     console.log(`[usb] device restarted character=${this.#character ?? 'unknown'}`);
     this.#changed();
     this.#refreshInfo();

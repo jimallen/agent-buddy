@@ -31,7 +31,10 @@ charger configuration.
 The current source uses two **2 MiB application slots** (`app0`, `app1`) for
 updates over Wi-Fi and a separate **11.875 MiB character partition** that holds
 exactly one character pack. The application is a shell: it contains no artwork
-or frame tables. A complete upload writes the application, partition table, and
+or frame tables. `bash tools/arduino.sh upload` writes the application and
+partition table but leaves that character partition alone, so a firmware update
+keeps the character you chose; pass `--with-character` to install the default
+Copilot pack as well. A complete upload writes the application, partition table, and
 default Copilot pack together. Firmware verifies the pack's SHA-256 before
 animation starts. There is no flash filesystem. Devices that have the older
 layout (one 2 MiB slot and a 13.875 MiB character partition) need one complete
@@ -69,6 +72,31 @@ That is why `tools/firmware_artifacts.py`, `tools/flash_release.py` and
 `characters/copilot/tools/embed_sprites.py` all bound the layout at 16 MiB:
 an oversized partition is rejected on the host rather than discovered on the
 device.
+
+### One character per harness needs the 7-inch board
+
+The fleet view draws one column per rig and shows each rig's chief of staff
+through the character pack that is installed, which is the *same* pack in every
+column. That is a flash limit, not a rendering choice: exactly one pack fits the
+11.875 MiB character partition, and Claude (1.8 MB), Pi (9.8 MB) and Copilot
+(9.5 MB) cannot co-reside. A person who runs Claude Code, Pi and Codex as rig
+chiefs of staff therefore sees one character repeated.
+
+The fleet packet already carries each rig's harness (`label:state:agent`), so
+those agents' badge icons mark the columns correctly. A real character per
+harness has to wait for a display whose storage is not the pack partition.
+
+The **ESP32-S3-Touch-LCD-7** (800x480) is that display: it has a TF/microSD slot
+(SPI `MOSI 11`, `SCK 12`, `MISO 13`, `CS` on CH422G `EXIO4`), so packs can stream
+from the card instead of being memory-mapped from flash, and its larger frame
+gives each column room for its own character and nameplate.
+
+What that port needs: a board layer (`firmware/boards.json` plus
+`src/boards/waveshare_lcd_70/`) driving the RGB panel through
+`Arduino_ESP32RGBPanel` with backlight, panel reset and panel power on the
+CH422G (it has no IMU and no audio codec); an SD-backed pack loader; and a
+per-rig pack id in the fleet packet. The pin-level brief for that board lives
+with the rig-fleet work, not here.
 
 The scripts use the existing Arduino IDE CLI, its configuration, and Waveshare's
 bundled GFX library. Overrides: `ARDUINO_CLI`, `ARDUINO_CONFIG`, `WAVESHARE_DIR`,

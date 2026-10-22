@@ -5,6 +5,23 @@ import type {DeviceOrientation} from './orientation-settings.js';
 export const characterStates = ['idle', 'surprise', 'working', 'complete', 'attention'] as const;
 export type CharacterState = typeof characterStates[number];
 
+// One rig for the display: its chief-of-staff seat folded to a character state.
+export interface RigCharacterView {
+  rigId: string;
+  rigName: string;
+  seatRef: string | null;
+  state: CharacterState;
+  present: boolean;
+}
+
+// The OpenRig fleet as the service sees it: reachability plus one character per rig.
+export interface OpenrigStatus {
+  enabled: boolean;
+  url: string;
+  reachable: boolean;
+  rigs: RigCharacterView[];
+}
+
 export const hookEvents = [
   'sessionStart',
   'userPromptSubmitted',
@@ -57,6 +74,7 @@ export type DaemonRequest =
   | {type: 'badges'; enabled: boolean}
   | {type: 'desktop'; visible?: boolean; backdrop?: string; sounds?: boolean; volume?: number; character?: string;
      deviceEnabled?: boolean}
+  | {type: 'openrig'; enabled?: boolean; url?: string}
   | {type: 'usage'; enabled?: boolean; window?: string}
   | {type: 'listCharacters'}
   | {type: 'settings'}
@@ -73,6 +91,7 @@ export interface DaemonStatus {
   sessions: number;
   agents?: AgentStatus[];
   drivingAgents?: AgentId[];
+  openrig?: OpenrigStatus;
   // The Wi-Fi network the device is set up for, as the device reports it. Never stored.
   network?: DeviceNetwork | null;
   orientation?: DeviceOrientation | null;

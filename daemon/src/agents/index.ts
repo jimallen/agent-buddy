@@ -12,10 +12,11 @@ import {isHookCurrent} from './hook-config.js';
 import {grokAdapter, grokHookPath} from './grok.js';
 import {hermesAdapter} from './hermes.js';
 import {openclawAdapter} from './openclaw.js';
+import {piAdapter} from './pi.js';
 import {configuredAgentEnabled, isAgentEnabledSync, loadAgentsConfigSync, updateAgentsConfig} from './config.js';
 import {namespacePayload} from './normalize.js';
 import {untrustedCodexHooks} from './codex.js';
-import {claudeHome, codexHome, copilotHome, grokHome, hermesHome} from './homes.js';
+import {claudeHome, codexHome, copilotHome, grokHome, hermesHome, piHome} from './homes.js';
 import {runWsl, wslExecutable, WslLocations} from './wsl.js';
 import {defaultDataDirectory, socketPath} from '../paths.js';
 import type {HookPayload} from '../protocol.js';
@@ -33,6 +34,7 @@ export const adapters: readonly AgentAdapter[] = [
   grokAdapter,
   hermesAdapter,
   openclawAdapter,
+  piAdapter,
 ];
 
 export const adapterById = new Map<AgentId, AgentAdapter>(adapters.map(adapter => [adapter.id, adapter]));

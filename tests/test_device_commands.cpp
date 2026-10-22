@@ -13,7 +13,7 @@ static DeviceCommand send(DeviceCommands& parser, const std::string& text) {
 }
 
 int main() {
-  static_assert(kDeviceProtocol == 12);
+  static_assert(kDeviceProtocol == 13);
   DeviceCommands parser;
   for (DeviceCommand command : {DeviceCommand::Idle, DeviceCommand::Surprise, DeviceCommand::Working,
                                 DeviceCommand::Complete, DeviceCommand::Attention}) {
@@ -50,6 +50,11 @@ int main() {
   assert(send(parser, "$\n") == DeviceCommand::SetUsage);
   assert(std::strcmp(parser.payload(), "") == 0);
   assert(send(parser, "$AIC: <1>\n") == DeviceCommand::Invalid);
+  assert(send(parser, "=eztrack:w,jims-team:-\n") == DeviceCommand::SetRigFleet);
+  assert(std::strcmp(parser.payload(), "eztrack:w,jims-team:-") == 0);
+  assert(send(parser, "=\n") == DeviceCommand::SetRigFleet);
+  assert(std::strcmp(parser.payload(), "") == 0);
+  assert(send(parser, "=eztrack working\n") == DeviceCommand::Invalid);
   assert(send(parser, "@invalid packet\n") == DeviceCommand::Invalid);
   assert(send(parser, "%copilot?:6F7CFF:" + mask + "\n") == DeviceCommand::Invalid);
   assert(send(parser, "&copilot=W\n") == DeviceCommand::Invalid);
