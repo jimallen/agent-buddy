@@ -55,9 +55,19 @@ uint16_t* fleetPresentation = nullptr;
 // The fleet view renders each rig's chief of staff into a column.
 CharacterMotion* fleetMotions = nullptr;
 uint16_t* fleetScratch = nullptr;
+// CharacterEffects only paints buffers it was constructed with, so the fleet gets its own
+// instance over its own scratch pair: that is what brings back the orbiting bits and sparkles
+// per rig column.
+CharacterEffects* fleetEffects = nullptr;
+// CharacterEffects keeps a damage record per registered buffer, so it needs two of them.
+uint16_t* fleetScratchAlt = nullptr;
 // True while the fleet is composed straight into a scanned panel framebuffer;
 // the presenter then has nothing to push.
 bool fleetOnPanel = false;
+// The fleet composes here and is copied to the scanned framebuffer in one pass. Writing the live
+// framebuffer column by column tears: the peripheral reads it continuously, so the panel shows
+// half-updated columns as a squashed second character and judder.
+uint16_t* fleetBackBuffer = nullptr;
 uint32_t fleetRenderedRevision = 0;
 uint32_t fleetLayoutRevision = 0;
 int64_t fleetNextStepAt = 0;
@@ -241,12 +251,51 @@ int rigBadgeStrip(uint16_t* frame) {
   return kRigBadgeTop + kRigBadgeSize + 4;
 }
 
+// A calibration pattern for an RGB panel: a one-pixel border, colour bars and a row ruler every
+// 40 lines. It exists to make a scanout fault legible - where the image wraps, which rows repeat,
+// where the border breaks - instead of describing "glitching" at each other.
+bool calibrationMode = false;
+
+uint16_t calibrationPixel(int x, int y) {
+  // Native RGB565, matching what the LCD_CAM reads.
+  const int width = 800, height = 480;
+  if (x < 2 || y < 2 || x >= width - 2 || y >= height - 2) return 0xFFFF;   // border
+  const int bar = (x * 8) / width;
+  static const uint16_t bars[8] = {0xF800, 0xFC00, 0xFFE0, 0x07E0, 0x07FF, 0x001F, 0xF81F, 0xFFFF};
+  // The ruler marks every 40 rows so a vertical offset is countable.
+  if (y % 40 < 2) return 0x0000;
+  if (y % 40 >= 2 && y % 40 < 4 && x < 24) return 0x0000;
+  return bars[bar];
+}
+
+bool drawCalibration() {
+  int panelWidth = 0, panelHeight = 0;
+  uint16_t* panel = display.panelFramebuffer(panelWidth, panelHeight);
+  if (!panel) return false;
+  for (int y = 0; y < panelHeight; ++y)
+    for (int x = 0; x < panelWidth; ++x)
+      panel[static_cast<size_t>(y) * panelWidth + x] = calibrationPixel(x, y);
+  calibrationMode = true;
+  fleetOnPanel = true;   // keep the presenter from painting over the pattern
+  logMessage("CALIBRATION on %dx%d\n", panelWidth, panelHeight);
+  return true;
+}
+
 // The fleet on a panel wider than the content: one column per rig across the panel's whole
 // width, each character fitted to its column so they read at a similar size (FleetLayout.h).
 // The LCD_CAM scans this buffer continuously, so we only redraw when something changed.
 bool renderFleetOnPanel(CharacterSprite& sprite, Frame* frame, const PackHeader& pack,
                         const RigFleetSnapshot& fleet, int64_t start,
                         uint16_t* panel, int panelWidth, int panelHeight) {
+  const size_t panelPixels = static_cast<size_t>(panelWidth) * panelHeight;
+  if (!fleetBackBuffer) {
+    fleetBackBuffer = static_cast<uint16_t*>(allocate(
+        panelPixels * sizeof(uint16_t), MALLOC_CAP_SPIRAM, "Fleet staging buffer allocation failed."));
+    std::memset(fleetBackBuffer, 0, panelPixels * sizeof(uint16_t));
+  }
+  // Draw straight into the framebuffer the panel scans, in row-sized writes. Staging then
+  // copying doubled the work and left a window where the panel read a half-written buffer.
+  uint16_t* const target = panel;
   if (!fleetMotions) {
     fleetMotions = static_cast<CharacterMotion*>(allocate(
         sizeof(CharacterMotion) * kMaxRigSlots, MALLOC_CAP_SPIRAM, "Fleet motion allocation failed."));
@@ -257,13 +306,20 @@ bool renderFleetOnPanel(CharacterSprite& sprite, Frame* frame, const PackHeader&
         sizeof(uint16_t) * kCharacterFrameWidth * kCharacterFrameHeight, MALLOC_CAP_SPIRAM,
         "Fleet scratch allocation failed."));
   }
+  if (!fleetEffects) {
+    fleetScratchAlt = static_cast<uint16_t*>(allocate(
+        sizeof(uint16_t) * kCharacterFrameWidth * kCharacterFrameHeight, MALLOC_CAP_SPIRAM,
+        "Fleet effects buffer allocation failed."));
+    auto* overlay = static_cast<uint16_t*>(allocate(
+        CharacterEffects::kOverlayScratchPixels * sizeof(uint16_t), MALLOC_CAP_SPIRAM,
+        "Fleet effects overlay allocation failed."));
+    fleetEffects = new (allocate(sizeof(CharacterEffects), MALLOC_CAP_INTERNAL,
+        "Fleet effects allocation failed.")) CharacterEffects(
+            fleetScratch, fleetScratchAlt, &agentBadges, overlay);
+  }
   const bool layoutChanged = fleet.layoutRevision != fleetLayoutRevision;
   const bool statesChanged = fleet.revision != fleetRenderedRevision;
-  if (layoutChanged) {
-    fleetLayoutRevision = fleet.layoutRevision;
-    // The column count or order moved, so the whole panel starts clean.
-    std::memset(panel, 0, static_cast<size_t>(panelWidth) * panelHeight * sizeof(uint16_t));
-  }
+  if (layoutChanged) fleetLayoutRevision = fleet.layoutRevision;
   if (statesChanged) {
     fleetRenderedRevision = fleet.revision;
     for (size_t index = 0; index < fleet.count; ++index) {
@@ -275,8 +331,22 @@ bool renderFleetOnPanel(CharacterSprite& sprite, Frame* frame, const PackHeader&
       fleetApplied[index] = requested;
     }
   }
-  if (!layoutChanged && !statesChanged && start < fleetNextStepAt) return true;
-  fleetNextStepAt = start + 1000000;
+  // The fleet is a status board, and this panel has no vsync hook to blit under: any write to the
+  // framebuffer it is scanning tears briefly. So write as rarely as possible - only when a rig's
+  // state or the layout actually changes, coalesced to at most one redraw per second. Between
+  // changes nothing touches the panel, and the picture is perfectly steady.
+  // Animate at a calm 8 fps. Each column costs a sprite render plus an effects pass, so a
+  // 125 ms budget leaves headroom while the characters still look around and blink instead of
+  // standing frozen. A layout change draws immediately.
+  const bool due = layoutChanged || start >= fleetNextStepAt;
+  if (!due) return true;
+  fleetNextStepAt = start + 125000;
+  // Only now that a redraw is really happening. Clear row by row: the peripheral keeps scanning
+  // while we write, and interleaving small writes is what the single-character path does without
+  // trouble, whereas one panel-sized burst starves it.
+  for (int y = 0; y < panelHeight; ++y)
+    std::memset(target + static_cast<size_t>(y) * panelWidth, 0,
+                static_cast<size_t>(panelWidth) * sizeof(uint16_t));
   const int artTop = (kCharacterFrameHeight - kFrameHeight) / 2;
   for (size_t index = 0; index < fleet.count; ++index) {
     const RigSlot& slot = fleet.slots[index];
@@ -284,23 +354,27 @@ bool renderFleetOnPanel(CharacterSprite& sprite, Frame* frame, const PackHeader&
     fleetLastStep[index] = start;
     const CharacterState state = fleetMotions[index].state();
     if (index == 0) frame->state = state;
+    // The effects own their buffer across frames (they restore what they painted), so reset and
+    // reuse one scratch pair rather than clearing it per column.
+    if (fleetEffects) fleetEffects->restore(fleetScratch);
     if (!sprite.render(state, fleetScratch)) return false;
+    if (fleetEffects && !fleetEffects->render(state, fleetScratch)) fatal(fleetEffects->error());
     const FleetColumn column = fleetColumn(static_cast<int>(index), static_cast<int>(fleet.count),
                                            panelWidth, panelHeight,
                                            kCharacterFrameWidth, kCharacterFrameHeight);
     // This path writes the framebuffer the panel scans, so it applies the board's byte order.
     blitRigColumn(fleetScratch + artTop * kCharacterFrameWidth, kCharacterFrameWidth, kFrameHeight,
-                  panel, panelWidth, column.artX, column.artY, column.artWidth, column.artHeight,
+                  target, panelWidth, column.artX, column.artY, column.artWidth, column.artHeight,
                   slot.present ? 1 : 0, kPanelSwappedBytes);
     const int labelY = panelHeight - 16;
     const int labelWidth = static_cast<int>(std::strlen(slot.label)) * 6;
     // Colours follow the same byte order as the pixels around them.
     const uint16_t labelColor = rigLabelColor(slot.mode, slot.present);
-    drawRigLabel(panel, panelWidth, panelHeight,
+    drawRigLabel(target, panelWidth, panelHeight,
                  column.x + std::max(0, (column.width - labelWidth) / 2), labelY,
                  slot.label, kPanelSwappedBytes ? copilot::swapBytes(labelColor) : labelColor);
     constexpr int kIconSize = 18;
-    drawRigAgentIcon(slot.agent, panel, panelWidth,
+    drawRigAgentIcon(slot.agent, target, panelWidth,
                      column.x + (column.width - kIconSize) / 2, labelY - 4 - kIconSize, kIconSize,
                      kPanelSwappedBytes);
   }
@@ -443,6 +517,10 @@ void animate(void*) {
     portEXIT_CRITICAL(&renderLock);
     // Installation erases the mapped pack and always restarts the device afterwards.
     if (paused) vTaskSuspend(nullptr);
+    if (calibrationMode) {
+      xQueueSend(readyFrames, &frame, portMAX_DELAY);
+      continue;
+    }
     const RigFleetSnapshot fleet = rigFleet.snapshot();
     const bool rendered = fleet.count
         ? renderFleetFrame(sprite, frame, pack, fleet, start)
@@ -1352,6 +1430,15 @@ void processCommand(DeviceCommand command, const DeviceCommands& parser, const F
       break;
     case DeviceCommand::None: break;
     case DeviceCommand::Invalid: logMessage("COMMAND_ERROR invalid or incomplete packet\n"); break;
+    case DeviceCommand::Calibration:
+      if (calibrationMode) {
+        calibrationMode = false;
+        fleetOnPanel = false;
+        logMessage("CALIBRATION off\n");
+      } else if (!drawCalibration()) {
+        logMessage("CALIBRATION unavailable on this board\n");
+      }
+      break;
     case DeviceCommand::Capture:
       if (frame) captureFrame(*frame);
       else logMessage("CAPTURE_ERROR no character installed\n");
@@ -1409,6 +1496,9 @@ void processCommand(DeviceCommand command, const DeviceCommands& parser, const F
     case DeviceCommand::SetRigFleet: {
       char response[96];
       char packet[196];
+      // Log the exact fleet the daemon sends: a wrong column count is otherwise invisible.
+      logMessage("FLEET_PACKET len=%u '%s'\n",
+                 static_cast<unsigned>(std::strlen(parser.payload())), parser.payload());
       snprintf(packet, sizeof(packet), "%c%s", badgePrefix(command), parser.payload());
       handleBadgePacket(packet, response, sizeof(response));
       logMessage("%s\n", response);
@@ -1710,6 +1800,15 @@ void loop() {
     // A wide panel is already showing the fleet: it scans the framebuffer we composed into, so
     // pushing the content frame over it would paint a small square on top of the columns.
     const uint16_t* pixels = rigFleet.count() && fleetPresentation ? fleetPresentation : frame->pixels;
+    // Evidence, not theory: say who is painting the panel on every presentation.
+    static int lastLogged = -1;
+    const int nowLogging = fleetOnPanel ? 1 : 0;
+    if (nowLogging != lastLogged) {
+      logMessage("PRESENT fleet=%u fleetOnPanel=%u skipping=%u\n",
+                 static_cast<unsigned>(rigFleet.count()), static_cast<unsigned>(fleetOnPanel),
+                 static_cast<unsigned>(fleetOnPanel));
+      lastLogged = nowLogging;
+    }
     if (!fleetOnPanel && !display.flushFrame(
             pixels, kCharacterFrameX, 0, kCharacterFrameWidth, kCharacterFrameHeight))
       fatal(display.error());

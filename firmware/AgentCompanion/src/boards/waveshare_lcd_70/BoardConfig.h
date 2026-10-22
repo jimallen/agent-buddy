@@ -42,7 +42,10 @@ constexpr int kRgbB0 = 14, kRgbB1 = 38, kRgbB2 = 18, kRgbB3 = 17, kRgbB4 = 10;
 // shows a one-pixel shift on the bench, this is the first value to flip.
 constexpr int kRgbPclkFrequency = 16000000;
 constexpr int kRgbHsyncPolarity = 1, kRgbHfrontPorch = 8, kRgbHpulseWidth = 4, kRgbHbackPorch = 8;
-constexpr int kRgbVsyncPolarity = 1, kRgbVfrontPorch = 8, kRgbVpulseWidth = 4, kRgbVbackPorch = 8;
+// Vertical jumping on glass means the panel is not latching VSYNC where we think. Polarity 0
+// makes the sync idle low and pulse high; the demo code that ships with this panel uses the
+// opposite of its own board config on this one argument, so it is the first thing to try.
+constexpr int kRgbVsyncPolarity = 0, kRgbVfrontPorch = 8, kRgbVpulseWidth = 4, kRgbVbackPorch = 8;
 constexpr int kRgbPclkActiveNeg = 1;
 // Ten lines staged in internal RAM; the vendor demo value, and the difference between a
 // stable picture and a shimmering one on this class of panel.

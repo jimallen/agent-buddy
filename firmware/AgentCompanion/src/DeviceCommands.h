@@ -6,7 +6,7 @@ namespace copilot {
 enum class DeviceCommand {
   None, Invalid, Capture, Heap, Info, UploadCharacter, ConfigureWifi, ScanWifi,
   DefineAgentIcon, SetAgentBadges, SetUsage, GetOrientation, ConfigureOrientation,
-  SetRigFleet, Idle, Surprise, Working, Complete, Attention
+  SetRigFleet, Calibration, Idle, Surprise, Working, Complete, Attention
 };
 constexpr unsigned kDeviceProtocol = 13;
 
@@ -121,6 +121,7 @@ class DeviceCommands {
   };
   static constexpr ByteCommand kByteCommands[] = {
     {'o', DeviceCommand::GetOrientation}, {'s', DeviceCommand::Capture},
+    {'k', DeviceCommand::Calibration},
     {'h', DeviceCommand::Heap}, {'i', DeviceCommand::Info},
     {'u', DeviceCommand::UploadCharacter}, {'w', DeviceCommand::ScanWifi},
   };
