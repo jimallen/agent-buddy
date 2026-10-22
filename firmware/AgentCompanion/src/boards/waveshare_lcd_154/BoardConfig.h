@@ -31,6 +31,8 @@ constexpr int kDisplayMosiPin = 39;
 constexpr int kDisplayResetPin = 40;
 // The panel's pins go through the GPIO matrix, so 40 MHz is the fastest reliable SPI clock.
 constexpr int kSpiFrequency = 40000000;
+// What setup() passes to the display: The panel pins go through the GPIO matrix, so 40 MHz is the fastest reliable SPI clock.
+constexpr int kDisplaySpeed = kSpiFrequency;
 constexpr int kDisplayBacklightPin = 46;
 constexpr uint32_t kDisplayBacklightPwmHz = 5000;
 constexpr uint8_t kDisplayBacklightPwmBits = 10;

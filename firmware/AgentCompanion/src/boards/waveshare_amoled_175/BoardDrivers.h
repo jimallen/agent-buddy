@@ -5,6 +5,7 @@
 #include "../drivers/Es8311AudioOutput.h"
 #include "../drivers/Qmi8658Accelerometer.h"
 #include "../../DisplayDma.h"
+#include "../../OrientedDisplay.h"
 #include <Arduino_GFX_Library.h>
 #include <TouchDrvCSTXXX.hpp>
 #include <Wire.h>
@@ -65,6 +66,13 @@ inline Es8311AudioOutput& audioOutput() {
                                    kAudioMinimumCodecVolume, kAudioMaximumCodecVolume,
                                    kAudioAmplifierStartupMs});
   return output;
+}
+
+// One display object per board; the sketch draws through whatever this returns.
+inline OrientedDisplay& createDisplay() {
+  static OrientedDisplay display(&displayPanel(), &displayBus(), displayScanout(),
+                                 setDisplayBrightness);
+  return display;
 }
 }  // namespace board
 }  // namespace copilot

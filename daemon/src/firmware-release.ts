@@ -39,6 +39,7 @@ export const firmwareBoards: readonly {id: string; name: string; models: string}
   {id: 'waveshare-amoled-175', name: 'Waveshare ESP32-S3-Touch-AMOLED-1.75',
    models: 'Waveshare ESP32-S3-Touch-AMOLED-1.75-B or -C'},
   {id: 'waveshare-lcd-154', name: 'Waveshare ESP32-S3-Touch-LCD-1.54', models: 'Waveshare ESP32-S3-Touch-LCD-1.54'},
+  {id: 'waveshare-lcd-70', name: 'Waveshare ESP32-S3-Touch-LCD-7', models: 'Waveshare ESP32-S3-Touch-LCD-7'},
 ];
 
 export function isFirmwareBoard(board: unknown): board is string {

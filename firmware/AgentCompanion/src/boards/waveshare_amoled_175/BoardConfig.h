@@ -32,6 +32,8 @@ constexpr int kDisplayResetPin = 39;
 // The panel's visible area starts at column 6 of the controller's memory.
 constexpr int kDisplayColumnOffset = 6;
 constexpr int kSpiFrequency = 80000000;
+// What setup() passes to the display: QSPI clock for the AMOLED panel.
+constexpr int kDisplaySpeed = kSpiFrequency;
 // CO5300 QSPI pixel write: command 0x32, address 0x003C00 (RAMWR).
 constexpr uint8_t kDisplayQspiWriteCommand = 0x32;
 constexpr uint32_t kDisplayQspiPixelAddress = 0x003C00;

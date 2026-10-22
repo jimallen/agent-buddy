@@ -5,6 +5,11 @@
 #include <freertos/FreeRTOS.h>
 #include <cstring>
 
+// The SPI/QSPI DMA scanout exists only on boards that push frames to a panel. An RGB board
+// scans its framebuffer through RgbDisplay instead, so this file is empty there.
+// A preprocessor test, not a constexpr: a C++ constant would be 0 to the preprocessor.
+#if !defined(AGENT_BOARD_WAVESHARE_LCD_70)
+
 namespace copilot {
 DisplayDma::~DisplayDma() {
   if (active_) finish();
@@ -124,3 +129,4 @@ bool DisplayDma::finish() {
   return error_ == nullptr;
 }
 }
+#endif  // !AGENT_BOARD_WAVESHARE_LCD_70

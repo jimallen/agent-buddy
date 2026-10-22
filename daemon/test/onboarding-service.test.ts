@@ -651,7 +651,8 @@ test('USB installs write the firmware for the board the device is, and never ano
     device.boardId = 'waveshare-lcd-154';
     const usb = service.status().firmware.usb;
     assert.equal(service.status().firmware.board, 'waveshare-lcd-154');
-    assert.deepEqual(usb.boards.map(board => board.id), ['waveshare-amoled-175', 'waveshare-lcd-154']);
+    assert.deepEqual(usb.boards.map(board => board.id),
+      ['waveshare-amoled-175', 'waveshare-lcd-154', 'waveshare-lcd-70']);
 
     // A device that answers decides the board.
     await service.installFirmwareOverUsb(device.usbPath);

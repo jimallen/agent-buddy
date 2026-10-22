@@ -38,8 +38,9 @@
 using namespace copilot;
 
 namespace {
-OrientedDisplay display(&board::displayPanel(), &board::displayBus(), board::displayScanout(),
-                        board::setDisplayBrightness);
+// The board decides how pixels reach its panel: a DMA-pushed SPI/QSPI display, or an RGB
+// framebuffer the LCD_CAM peripheral scans out. The sketch only sees this reference.
+auto& display = board::createDisplay();
 QueueHandle_t freeFrames, readyFrames, commands;
 TaskHandle_t renderTask;
 SpriteRenderer* patchRenderer = nullptr;
@@ -95,6 +96,11 @@ constexpr char kSoundPreference[] = "sound";
 constexpr char kSoundVolumePreference[] = "volume";
 constexpr char kOrientationPreference[] = "orient-offset";
 
+// UART0 carries the same log lines as the USB port. The USB port is the app's data channel, but
+// a board behind a UART bridge (or with its USB unplugged) still has to be debuggable: on the
+// seven-inch board UART0 goes to the CH343P bridge, elsewhere to the header.
+bool diagnosticsReady = false;
+
 void logMessage(const char* format, ...) {
   // Holds the longest line, the INFO reply; tests/test_boards.py checks its worst case fits. A longer
   // message is dropped, and a dropped INFO reply stops the app from finding the device.
@@ -103,8 +109,15 @@ void logMessage(const char* format, ...) {
   va_start(arguments, format);
   const int length = vsnprintf(message, sizeof(message), format, arguments);
   va_end(arguments);
-  if (length < 0 || static_cast<size_t>(length) >= sizeof(message) || !Serial
-      || Serial.availableForWrite() < length) {
+  if (length < 0 || static_cast<size_t>(length) >= sizeof(message)) {
+    ++droppedLogs;
+    return;
+  }
+  // Diagnostics first: a board with no USB host attached (or one behind a UART bridge) must
+  // still be readable, so UART0 does not depend on the USB port being ready.
+  if (diagnosticsReady && Serial0.availableForWrite() >= length)
+    Serial0.write(reinterpret_cast<const uint8_t*>(message), length);
+  if (!Serial || Serial.availableForWrite() < length) {
     ++droppedLogs;
     return;
   }
@@ -1447,12 +1460,14 @@ void startCharacter() {
 void setup() {
   board::beginBoard();
   if (!beginSerial()) fatal("USB buffer allocation failed.");
+  Serial0.begin(115200);
+  diagnosticsReady = true;
   if (!psramFound()) fatal("8 MB OPI PSRAM not detected.");
   logMessage("\nAgent Companion character shell / %s (%s)\nPanel: %s %dx%d (content %dx%d), touch: %s\n"
              "PSRAM: %u bytes\n",
              board::kName, board::kId, board::kDisplayPanelName, kPanelSize, kPanelSize,
              kDisplaySize, kDisplaySize, board::kTouchControllerName, ESP.getPsramSize());
-  if (!display.begin(kSpiFrequency)) fatal(display.error());
+  if (!display.begin(kDisplaySpeed)) fatal(display.error());
   display.setBrightness(0);
   display.fillScreen(0);
   characterReady = initializeSpriteStorage();

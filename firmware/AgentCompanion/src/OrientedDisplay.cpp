@@ -5,6 +5,11 @@
 #include <esp_timer.h>
 #include <esp_memory_utils.h>
 
+// The SPI/QSPI display path exists only on boards that push frames to a panel. An RGB board
+// scans its framebuffer through RgbDisplay instead, so this file is empty there.
+// A preprocessor test, not a constexpr: a C++ constant would be 0 to the preprocessor.
+#if !defined(AGENT_BOARD_WAVESHARE_LCD_70)
+
 namespace copilot {
 OrientedDisplay::OrientedDisplay(board::DisplayPanel* panel, Arduino_DataBus* bus,
                                  const DisplayScanout& scanout, void (*setBrightness)(uint8_t))
@@ -137,3 +142,4 @@ bool OrientedDisplay::flushSource(const ScreenPixels& source) {
   return error_ == nullptr;
 }
 }
+#endif  // !AGENT_BOARD_WAVESHARE_LCD_70

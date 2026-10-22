@@ -1,0 +1,127 @@
+#pragma once
+// The display for a controller-less RGB panel. Same surface as OrientedDisplay so the sketch does
+// not care which board it runs on, but the pixels go to a framebuffer the LCD_CAM peripheral scans
+// continuously instead of being pushed over SPI/QSPI (see RgbScanout.h).
+#include "Config.h"
+#include "RgbScanout.h"
+#include <Arduino_GFX_Library.h>
+#include <esp_heap_caps.h>
+#include <esp_timer.h>
+#include <cmath>
+
+namespace copilot {
+class RgbDisplay : public Arduino_Canvas {
+ public:
+  RgbDisplay(board::DisplayPanel* panel, void (*setBrightness)(uint8_t))
+      : Arduino_Canvas(kDisplaySize, kDisplaySize, nullptr), panel_(panel),
+        setBrightness_(setBrightness) {}
+  ~RgbDisplay() { delete scanout_; }
+
+  bool begin(int32_t speed = GFX_NOT_DEFINED) override {
+    error_ = nullptr;
+    if (!panel_->begin(speed)) {
+      error_ = "RGB panel initialization failed.";
+      return false;
+    }
+    uint16_t* framebuffer = panel_->getFramebuffer();
+    if (!framebuffer) {
+      error_ = "The RGB panel reported no framebuffer.";
+      return false;
+    }
+    if (!_framebuffer) {
+      _framebuffer = static_cast<uint16_t*>(heap_caps_aligned_alloc(
+          16, static_cast<size_t>(kDisplaySize) * kDisplaySize * sizeof(uint16_t),
+          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    }
+    if (!_framebuffer) {
+      error_ = "Orientation canvas allocation failed.";
+      return false;
+    }
+    if (!scratch_) {
+      scratch_ = static_cast<uint16_t*>(heap_caps_aligned_alloc(
+          16, static_cast<size_t>(kDisplaySize) * kDisplaySize * sizeof(uint16_t),
+          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    }
+    if (!scratch_) {
+      error_ = "Rotation scratch allocation failed.";
+      return false;
+    }
+    delete scanout_;
+    scanout_ = new RgbScanout(framebuffer, kRgbPanelWidth, kRgbPanelHeight,
+                              kDisplaySize, scratch_);
+    if (!scanout_->begin()) {
+      error_ = scanout_->error();
+      return false;
+    }
+    scanout_->setAngle(angle_ + trim_);
+    return true;
+  }
+
+  // The canvas itself is the content: flush() shows what the sketch drew.
+  void flush(bool forceFlush = false) override {
+    (void)forceFlush;
+    compose({_framebuffer, 0, 0, kDisplaySize, kDisplaySize, Rgb565Order::Native});
+  }
+
+  // Character frames arrive in the pack's display order and sit at kCharacterFrameX inside the
+  // content, exactly as on the other boards.
+  bool flushFrame(const uint16_t* pixels, int x, int y, int width, int height) {
+    return compose({pixels, x, y, width, height, Rgb565Order::Display});
+  }
+
+  bool setAngle(float radians) {
+    if (!std::isfinite(radians)) return false;
+    if (radians == angle_) return false;
+    angle_ = radians;
+    if (scanout_) scanout_->setAngle(angle_ + trim_);
+    return true;
+  }
+
+  bool setTrim(float radians) {
+    if (!std::isfinite(radians)) return false;
+    if (radians == trim_) return false;
+    trim_ = radians;
+    if (scanout_) scanout_->setAngle(angle_ + trim_);
+    return true;
+  }
+
+  float angle() const { return angle_ + trim_; }
+
+  // Nothing is staged for DMA on this board; the LCD_CAM peripheral reads the framebuffer itself.
+  // Accepted and ignored so the shared setup path does not need a special case.
+  bool setTransferBuffer(uint8_t*, size_t) { return true; }
+
+  void setBrightness(uint8_t brightness) { setBrightness_(brightness); }
+  const char* error() const { return error_; }
+  uint32_t composeUs() const { return composeUs_; }
+  uint32_t writeUs() const { return writeUs_; }
+
+ private:
+  bool compose(const ScreenPixels& source) {
+    error_ = nullptr;
+    if (!scanout_) {
+      error_ = "The RGB panel is not started.";
+      return false;
+    }
+    const int64_t started = esp_timer_get_time();
+    if (!scanout_->compose(source)) {
+      error_ = scanout_->error();
+      return false;
+    }
+    composeUs_ = esp_timer_get_time() - started;
+    // The panel scans the framebuffer out on its own, so there is no transfer cost to report.
+    writeUs_ = 0;
+    return true;
+  }
+
+  board::DisplayPanel* panel_;
+  void (*setBrightness_)(uint8_t);
+  RgbScanout* scanout_ = nullptr;
+  uint16_t* scratch_ = nullptr;
+  float angle_ = 0.0f;
+  float trim_ = 0.0f;
+  const char* error_ = nullptr;
+  uint32_t composeUs_ = 0;
+  uint32_t writeUs_ = 0;
+};
+}
