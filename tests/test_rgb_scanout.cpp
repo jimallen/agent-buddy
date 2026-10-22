@@ -48,15 +48,28 @@ int main() {
     assert(panel[scanout.contentY() * 320 + scanout.contentX()] == 0x1234);
   }
 
-  // A sub-rectangle of the content composites at the same place: the frame is always full size.
+  // A window of the content is placed at its own offset, and its rows are packed at its own
+  // width: the device's character frame is 412 wide inside 466 content.
   {
     std::vector<uint16_t> panel(200 * 200, 0);
     RgbScanout scanout(panel.data(), 200, 200, 64);
     assert(scanout.begin());
-    std::vector<uint16_t> content(64 * 64, 0x001F);
-    assert(scanout.compose({content.data(), 8, 8, 16, 16, Rgb565Order::Native}));
-    // A 16x16 patch at (8,8) is not the full frame, so nothing is copied over it: the source is
-    // validated as a window, and only the frame's own stride is used.
+    // A 10x4 window whose rows are 10 pixels apart, filled with a per-row marker.
+    std::vector<uint16_t> content(10 * 4);
+    for (int y = 0; y < 4; ++y)
+      for (int x = 0; x < 10; ++x) content[y * 10 + x] = static_cast<uint16_t>(0x1000 + y);
+    assert(scanout.compose({content.data(), 8, 16, 10, 4, Rgb565Order::Native}));
+    const int ox = scanout.contentX(), oy = scanout.contentY();
+    for (int y = 0; y < 4; ++y) {
+      // Right place...
+      assert(panel[(oy + 16 + y) * 200 + ox + 8] == static_cast<uint16_t>(0x1000 + y));
+      assert(panel[(oy + 16 + y) * 200 + ox + 8 + 9] == static_cast<uint16_t>(0x1000 + y));
+      // ...and nothing written to the neighbouring columns or rows.
+      assert(panel[(oy + 16 + y) * 200 + ox + 7] == 0);
+      assert(panel[(oy + 16 + y) * 200 + ox + 18] == 0);
+    }
+    assert(panel[(oy + 15) * 200 + ox + 8] == 0);
+    assert(panel[(oy + 20) * 200 + ox + 8] == 0);
     assert(scanout.error() == nullptr);
   }
 

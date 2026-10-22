@@ -83,6 +83,25 @@ Driving it on the device still needs the panel itself brought up (item 2 below).
 - Confirm the flash is really 16 MB (`esptool flash_id`); the schematic silkscreen
   and some docs disagree.
 
+## Previewing without the board
+
+There is no usable emulator for this panel: QEMU's ESP32-S3 target and Wokwi both emulate the
+CPU and Wi-Fi, but neither emulates LCD_CAM scanning a framebuffer, so the display stays black.
+
+The repo's own host renderer is the substitute, and for the part that matters it is exact: only
+`RgbScanout` decides where content lands on the panel, so running it on the host shows the
+truth. `tools/rgb_panel_preview.py` builds it and renders a PNG:
+
+```bash
+python3 tools/rgb_panel_preview.py --pattern                  # centring and margins
+python3 tools/rgb_panel_preview.py --in frame.raw             # a device capture
+python3 tools/rgb_panel_preview.py --pattern --angle 90       # rotation
+```
+
+`frame.raw` is the raw RGB565 from a device capture (`CAPTURE` / the `s` command), which is
+exactly what the firmware hands the scanout. Verified at 800x480: content at (167, 7), the
+412-wide character frame placed at its own offset inside the 466 content, margins black.
+
 ## Testing without the board
 
 The expander is host-tested (`tests/test_ch422g.cpp`, run by

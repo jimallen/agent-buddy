@@ -66,29 +66,35 @@ class RgbScanout {
       error_ = "Rotated RGB scanout needs a scratch buffer.";
       return false;
     }
-    const uint16_t* pixels = source.pixels;
-    Rgb565Order order = source.order;
-    int stride = content_;
+    const int originX = contentX();
+    const int originY = contentY();
     if (rotate) {
+      // Rotation needs the whole content frame, and ScreenTransform emits display order.
       const ScreenTransform transform(content_, content_, angle_);
       if (!transform.renderRows(source, 0, content_, scratch_,
                                 static_cast<size_t>(content_) * content_)) {
         error_ = "RGB scanout rotation failed.";
         return false;
       }
-      pixels = scratch_;
-      order = Rgb565Order::Display;
-    }
-    const int originX = contentX();
-    const int originY = contentY();
-    const bool convert = (order == Rgb565Order::Native) == swapped_;
-    for (int y = 0; y < content_; ++y) {
-      const uint16_t* from = pixels + static_cast<size_t>(y) * stride;
-      uint16_t* to = panel_ + static_cast<size_t>(originY + y) * panelWidth_ + originX;
-      if (convert) {
+      for (int y = 0; y < content_; ++y) {
+        const uint16_t* from = scratch_ + static_cast<size_t>(y) * content_;
+        uint16_t* to = panel_ + static_cast<size_t>(originY + y) * panelWidth_ + originX;
         for (int x = 0; x < content_; ++x) to[x] = swapBytes(from[x]);
+      }
+      painted_ = true;
+      return true;
+    }
+    // Unrotated: source is a window of the content, packed at its own width (the device's
+    // character frame is 412 wide inside 466 content), placed where it belongs in the panel.
+    const bool convert = (source.order == Rgb565Order::Native) == swapped_;
+    for (int y = 0; y < source.height; ++y) {
+      const uint16_t* from = source.pixels + static_cast<size_t>(y) * source.width;
+      uint16_t* to = panel_ + static_cast<size_t>(originY + source.y + y) * panelWidth_
+                     + originX + source.x;
+      if (convert) {
+        for (int x = 0; x < source.width; ++x) to[x] = swapBytes(from[x]);
       } else {
-        std::memcpy(to, from, static_cast<size_t>(content_) * sizeof(uint16_t));
+        std::memcpy(to, from, static_cast<size_t>(source.width) * sizeof(uint16_t));
       }
     }
     painted_ = true;
