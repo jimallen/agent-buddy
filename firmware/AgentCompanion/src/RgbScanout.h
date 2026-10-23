@@ -93,7 +93,17 @@ class RgbScanout {
       uint16_t* to = panel_ + static_cast<size_t>(originY + source.y + y) * panelWidth_
                      + originX + source.x;
       if (convert) {
-        for (int x = 0; x < source.width; ++x) to[x] = swapBytes(from[x]);
+        // Two pixels per 32-bit store: the byte swap then costs one BSWAP instead of two
+        // read-modify-writes per pixel, which was 40 ms for a full frame and left the panel
+        // being rewritten almost continuously.
+        int x = 0;
+        for (; x + 1 < source.width; x += 2) {
+          uint32_t pair;
+          std::memcpy(&pair, from + x, sizeof(pair));
+          pair = __builtin_bswap32(pair);
+          std::memcpy(to + x, &pair, sizeof(pair));
+        }
+        for (; x < source.width; ++x) to[x] = swapBytes(from[x]);
       } else {
         std::memcpy(to, from, static_cast<size_t>(source.width) * sizeof(uint16_t));
       }

@@ -87,7 +87,7 @@ uint16_t* fleetScratchAlt = nullptr;
 bool fleetOnPanel = false;
 // How often the fleet repaints. 0 freezes it: that is the only setting with no writes at all, and
 // therefore the only one that cannot tear.
-int64_t fleetStepMicros = 50000;
+int64_t fleetStepMicros = 66000;
 // The fleet composes here and is copied to the scanned framebuffer in one pass. Writing the live
 // framebuffer column by column tears: the peripheral reads it continuously, so the panel shows
 // half-updated columns as a squashed second character and judder.
