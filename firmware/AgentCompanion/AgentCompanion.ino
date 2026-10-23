@@ -82,6 +82,10 @@ uint16_t* fleetScratch = nullptr;
 CharacterEffects* fleetEffects = nullptr;
 // CharacterEffects keeps a damage record per registered buffer, so it needs two of them.
 uint16_t* fleetScratchAlt = nullptr;
+// Per-column pose signature: the pose a column's pixels were last painted from. An unchanged pose
+// means the panel already shows the right picture, so the tick costs nothing at all.
+uint8_t fleetPoseSignature[kMaxRigSlots][sizeof(SpritePose)];
+bool fleetPoseValid[kMaxRigSlots] = {};
 // True while the fleet is composed straight into a scanned panel framebuffer;
 // the presenter then has nothing to push.
 bool fleetOnPanel = false;
@@ -308,6 +312,20 @@ bool drawCalibration() {
 // The fleet on a panel wider than the content: one column per rig across the panel's whole
 // width, each character fitted to its column so they read at a similar size (FleetLayout.h).
 // The LCD_CAM scans this buffer continuously, so we only redraw when something changed.
+// Swap the whole frame once, two pixels per 32-bit store. Doing it here is far cheaper than
+// swapping inside the scaled blit: this pass is sequential, while the blit revisits each source
+// pixel as often as the scale repeats it.
+void swapFrameInPlace(uint16_t* pixels, size_t count) {
+  size_t index = 0;
+  for (; index + 1 < count; index += 2) {
+    uint32_t pair;
+    std::memcpy(&pair, pixels + index, sizeof(pair));
+    pair = __builtin_bswap32(pair);
+    std::memcpy(pixels + index, &pair, sizeof(pair));
+  }
+  for (; index < count; ++index) pixels[index] = copilot::swapBytes(pixels[index]);
+}
+
 bool renderFleetOnPanel(CharacterSprite& sprite, Frame* frame, const PackHeader& pack,
                         const RigFleetSnapshot& fleet, int64_t start,
                         uint16_t* panel, int panelWidth, int panelHeight) {
@@ -379,20 +397,29 @@ bool renderFleetOnPanel(CharacterSprite& sprite, Frame* frame, const PackHeader&
     fleetLastStep[index] = start;
     const CharacterState state = fleetMotions[index].state();
     if (index == 0) frame->state = state;
+    // Nothing to paint if this column's pose is byte-identical to the one on screen: the panel
+    // already holds the right pixels, so skip both the decode and the blit.
+    const bool poseUnchanged = !layoutChanged && fleetPoseValid[index]
+        && std::memcmp(&fleetPoseSignature[index], &state.pose, sizeof(SpritePose)) == 0;
+    if (poseUnchanged) continue;
     // The effects own their buffer across frames (they restore what they painted), so reset and
     // reuse one scratch pair rather than clearing it per column.
     if (fleetEffects) fleetEffects->restore(fleetScratch);
     if (!sprite.render(state, fleetScratch)) return false;
     if (fleetEffects && !fleetEffects->render(state, fleetScratch)) fatal(fleetEffects->error());
+    // Match the panel's byte order once for the whole frame, then blit with plain 16-bit copies.
+    if (kPanelSwappedBytes) swapFrameInPlace(fleetScratch, static_cast<size_t>(kCharacterFrameWidth) * kCharacterFrameHeight);
+    std::memcpy(&fleetPoseSignature[index], &state.pose, sizeof(SpritePose));
+    fleetPoseValid[index] = true;
     const FleetColumn column = fleetColumn(static_cast<int>(index), static_cast<int>(fleet.count),
                                            panelWidth, panelHeight,
                                            kCharacterFrameWidth, kCharacterFrameHeight);
     // The full source frame, not just the art rectangle: the frame's own black margins cover the
     // column, so a redraw never has to blank the panel first.
     const int columnHeight = panelHeight - kFleetLabelBand;
-    blitRigColumn(fleetScratch, kCharacterFrameWidth, kCharacterFrameHeight,
-                  target, panelWidth, column.x, 0, column.width, columnHeight,
-                  slot.present ? 1 : 0, kPanelSwappedBytes);
+    blitRigColumnNative(fleetScratch, kCharacterFrameWidth, kCharacterFrameHeight,
+                        target, panelWidth, column.x, 0, column.width, columnHeight,
+                        slot.present ? 1 : 0);
     const int labelY = panelHeight - 16;
     const int labelWidth = static_cast<int>(std::strlen(slot.label)) * 6;
     // Colours follow the same byte order as the pixels around them.

@@ -32,6 +32,12 @@ bool isRigStateLetter(char letter);
 void blitRigColumn(const uint16_t* art, int artWidth, int artHeight, uint16_t* frame,
                    int frameWidth, int x0, int y0, int width, int height, int fullBrightness,
                    bool swapBytes = false);
+
+// The same blit for art already in the panel's own byte order, which the RGB board prepares once
+// per pose instead of reordering pixels inside the scaled loop.
+void blitRigColumnNative(const uint16_t* art, int artWidth, int artHeight, uint16_t* frame,
+                         int frameWidth, int x0, int y0, int width, int height,
+                         int fullBrightness);
 // Writes are clipped to the frame; an over-long label is truncated.
 void drawRigLabel(uint16_t* frame, int frameWidth, int frameHeight, int x, int y,
                   const char* label, uint16_t color);

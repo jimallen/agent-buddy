@@ -190,6 +190,13 @@ uint16_t dimRigPixel(uint16_t pixel) {
   const uint16_t r = (value >> 11) & 0x1F, g = (value >> 5) & 0x3F, b = value & 0x1F;
   return swapBytes(static_cast<uint16_t>((r >> 1) << 11 | (g >> 1) << 5 | (b >> 1)));
 }
+
+// Same dimming for art already in the panel's own byte order, as the fleet's pre-swapped frames
+// are: swapping here as well would halve the wrong channel bits.
+uint16_t dimRigPixelNative(uint16_t value) {
+  const uint16_t r = (value >> 11) & 0x1F, g = (value >> 5) & 0x3F, b = value & 0x1F;
+  return static_cast<uint16_t>((r >> 1) << 11 | (g >> 1) << 5 | (b >> 1));
+}
 }
 
 void blitRigColumn(const uint16_t* art, int artWidth, int artHeight, uint16_t* frame,
@@ -207,6 +214,31 @@ void blitRigColumn(const uint16_t* art, int artWidth, int artHeight, uint16_t* f
       uint16_t pixel = row[sourceX];
       if (swapBytes) pixel = swapBytesValue(pixel);
       out[x] = fullBrightness ? pixel : dimRigPixel(pixel);
+      columnError += artWidth;
+      while (columnError >= width) {
+        columnError -= width;
+        ++sourceX;
+      }
+    }
+    rowError += artHeight;
+    while (rowError >= height) {
+      rowError -= height;
+      ++sourceY;
+    }
+  }
+}
+
+void blitRigColumnNative(const uint16_t* art, int artWidth, int artHeight, uint16_t* frame,
+                          int frameWidth, int x0, int y0, int width, int height,
+                          int fullBrightness) {
+  int sourceY = 0, rowError = 0;
+  for (int y = 0; y < height; ++y) {
+    const uint16_t* row = art + static_cast<size_t>(sourceY) * artWidth;
+    uint16_t* out = frame + static_cast<size_t>(y0 + y) * frameWidth + x0;
+    int sourceX = 0, columnError = 0;
+    for (int x = 0; x < width; ++x) {
+      const uint16_t pixel = row[sourceX];
+      out[x] = fullBrightness ? pixel : dimRigPixelNative(pixel);
       columnError += artWidth;
       while (columnError >= width) {
         columnError -= width;

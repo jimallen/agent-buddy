@@ -109,6 +109,16 @@ int main() {
   blitRigColumn(solid, 2, 2, dimmed, 2, 0, 0, 2, 2, 0);
   assert(swapBytes(dimmed[0]) == rgb565(100, 60, 20));
 
+  // Art already in panel order goes through the native variant, which must not reorder bytes.
+  uint16_t nativeDimmed[2 * 2] = {0};
+  const uint16_t nativeSolid[2 * 2] = {rgb565(200, 120, 40), rgb565(200, 120, 40),
+                                       rgb565(200, 120, 40), rgb565(200, 120, 40)};
+  blitRigColumnNative(nativeSolid, 2, 2, nativeDimmed, 2, 0, 0, 2, 2, 0);
+  assert(nativeDimmed[0] == rgb565(100, 60, 20));
+  uint16_t nativeFull[2 * 2] = {0};
+  blitRigColumnNative(nativeSolid, 2, 2, nativeFull, 2, 0, 0, 2, 2, 1);
+  assert(nativeFull[0] == rgb565(200, 120, 40));
+
   // Labels draw 5x7 lowercase; unknown characters skip a cell instead of aborting.
   uint16_t label[64 * 16];
   std::memset(label, 0, sizeof(label));
