@@ -54,6 +54,8 @@ class RgbDisplay : public Arduino_Canvas {
       return false;
     }
     scanout_->setAngle(angle_ + trim_);
+    // 32 rows is ~3 KB per band; a short pause between bands keeps the panel's fetch fed.
+    scanout_->setPacing(32, [] { delayMicroseconds(150); });
     return true;
   }
 

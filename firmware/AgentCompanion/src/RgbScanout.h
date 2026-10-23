@@ -88,6 +88,7 @@ class RgbScanout {
     // character frame is 412 wide inside 466 content), placed where it belongs in the panel.
     const bool convert = (source.order == Rgb565Order::Native) == swapped_;
     for (int y = 0; y < source.height; ++y) {
+      if (yield_ && bandRows_ > 0 && y > 0 && y % bandRows_ == 0) yield_();
       const uint16_t* from = source.pixels + static_cast<size_t>(y) * source.width;
       uint16_t* to = panel_ + static_cast<size_t>(originY + source.y + y) * panelWidth_
                      + originX + source.x;
@@ -106,6 +107,14 @@ class RgbScanout {
   int contentX() const { return (panelWidth_ - content_) / 2; }
   int contentY() const { return (panelHeight_ - content_) / 2; }
 
+  // A full-frame compose is hundreds of KB of PSRAM traffic. The panel fetches its scanout from
+  // the same memory, so a single long burst starves it and the picture jumps. Yielding every few
+  // rows lets the peripheral be refilled in between.
+  void setPacing(int rowsPerBand, void (*yield)()) {
+    bandRows_ = rowsPerBand > 0 ? rowsPerBand : 0;
+    yield_ = yield;
+  }
+
   uint16_t* framebuffer() const { return panel_; }
   bool painted() const { return painted_; }
   const char* error() const { return error_; }
@@ -118,6 +127,8 @@ class RgbScanout {
   bool valid_ = false;
   bool painted_ = false;
   float angle_ = 0.0f;
+  int bandRows_ = 0;
+  void (*yield_)() = nullptr;
   const char* error_ = nullptr;
 };
 }

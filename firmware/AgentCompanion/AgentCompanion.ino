@@ -1812,17 +1812,23 @@ void loop() {
   if (!settings.isOpen() && !prompt) {
     // A wide panel is already showing the fleet: it scans the framebuffer we composed into, so
     // pushing the content frame over it would paint a small square on top of the columns.
+    // Whatever painted the panel, the presenter must not paint over it. A wide panel showing the
+    // fleet is decided here from the board and the fleet itself, so a stale cross-task flag can
+    // never leave the small content frame being pushed on top of the wide fleet picture (which is
+    // what produced "one big character and one tiny one").
+    int panelWidth = 0, panelHeight = 0;
+    const bool widePanel = display.panelFramebuffer(panelWidth, panelHeight) != nullptr;
+    const bool presenterOwnsPanel = !widePanel || rigFleet.count() == 0;
     const uint16_t* pixels = rigFleet.count() && fleetPresentation ? fleetPresentation : frame->pixels;
-    // Evidence, not theory: say who is painting the panel on every presentation.
-    static int lastLogged = -1;
-    const int nowLogging = fleetOnPanel ? 1 : 0;
-    if (nowLogging != lastLogged) {
-      logMessage("PRESENT fleet=%u fleetOnPanel=%u skipping=%u\n",
-                 static_cast<unsigned>(rigFleet.count()), static_cast<unsigned>(fleetOnPanel),
-                 static_cast<unsigned>(fleetOnPanel));
-      lastLogged = nowLogging;
-    }
-    if (!fleetOnPanel && !display.flushFrame(
+    // An RGB panel scans its framebuffer out of the same PSRAM we write. Composing a frame costs
+    // ~40 ms because the pack's big-endian words must be swapped to native, so presenting at
+    // 30 fps would occupy the memory bus almost continuously and starve the scan - the picture
+    // then jumps. Eight presentations a second keeps that under about a third of the bus.
+    static int64_t nextWideFlush = 0;
+    const int64_t nowFlush = esp_timer_get_time();
+    const bool wideFlushDue = !widePanel || nowFlush >= nextWideFlush;
+    if (widePanel && wideFlushDue) nextWideFlush = nowFlush + 125000;
+    if (presenterOwnsPanel && wideFlushDue && !display.flushFrame(
             pixels, kCharacterFrameX, 0, kCharacterFrameWidth, kCharacterFrameHeight))
       fatal(display.error());
   } else if (orientationChanged) {
