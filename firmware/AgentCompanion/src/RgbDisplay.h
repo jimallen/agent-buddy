@@ -120,11 +120,18 @@ class RgbDisplay : public Arduino_Canvas {
       return false;
     }
     const size_t bytes = static_cast<size_t>(width) * height * sizeof(uint16_t);
-    for (int index = 0; index < board::DisplayPanel::kFrameBuffers; ++index) {
-      uint16_t* buffer = panel_->framebuffer(index);
-      if (!buffer) return false;
-      if (buffer != pixels) std::memcpy(buffer, pixels, bytes);
+    uint16_t* painted = panel_->framebuffer(back_);
+    if (!painted) return false;
+    // Paint the buffer the panel is not scanning, hand it over, and only then bring the other one
+    // up to date - by which time the panel has moved off it. Copying into both up front writes the
+    // buffer being scanned, which is exactly what made the picture fail while the tokens animated.
+    std::memcpy(painted, pixels, bytes);
+    if (!panel_->present(back_)) {
+      error_ = panel_->error();
+      return false;
     }
+    back_ ^= 1;
+    if (uint16_t* spare = panel_->framebuffer(back_)) std::memcpy(spare, pixels, bytes);
     return true;
   }
   const char* error() const { return error_; }
@@ -146,10 +153,14 @@ class RgbDisplay : public Arduino_Canvas {
       return false;
     }
     composeUs_ = esp_timer_get_time() - started;
-    for (int index = 1; index < board::DisplayPanel::kFrameBuffers; ++index) {
-      uint16_t* buffer = panel_->framebuffer(index);
-      if (!buffer) return false;
-      std::memcpy(buffer, front, static_cast<size_t>(kRgbPanelWidth) * kRgbPanelHeight * sizeof(uint16_t));
+    // Same order as presentSurface: hand the painted buffer over first, then catch the other up
+    // while the panel is busy scanning the one just presented.
+    if (!panel_->present(0)) {
+      error_ = panel_->error();
+      return false;
+    }
+    if (uint16_t* spare = panel_->framebuffer(1)) {
+      std::memcpy(spare, front, static_cast<size_t>(kRgbPanelWidth) * kRgbPanelHeight * sizeof(uint16_t));
     }
     // The panel scans the framebuffer out on its own, so there is no transfer cost to report.
     writeUs_ = 0;
