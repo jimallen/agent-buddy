@@ -96,7 +96,7 @@ bool fleetPoseValid[kMaxRigSlots] = {};
 bool fleetOnPanel = false;
 // How often the fleet repaints. 0 freezes it: that is the only setting with no writes at all, and
 // therefore the only one that cannot tear.
-int64_t fleetStepMicros = 66000;
+int64_t fleetStepMicros = 0;
 // The fleet composes here and is copied to the scanned framebuffer in one pass. Writing the live
 // framebuffer column by column tears: the peripheral reads it continuously, so the panel shows
 // half-updated columns as a squashed second character and judder.
@@ -388,9 +388,14 @@ bool renderFleetOnPanel(CharacterSprite& sprite, Frame* frame, const PackHeader&
   // changes nothing touches the panel, and the picture is perfectly steady.
   // Animate at 15 fps: smoother than 8, which stepped visibly, while still inside the cost of a
   // column's sprite render plus effects pass. A layout change draws immediately.
-  const bool due = layoutChanged || start >= fleetNextStepAt;
+  // A zero step means the board does not animate. With a single framebuffer available on this core,
+  // any sustained writing into the buffer the peripheral is scanning tears the picture - the vendor
+  // demo is steady precisely because it paints once and then never touches the framebuffer. So the
+  // default is a status board that repaints only when a rig actually changes.
+  const bool animating = fleetStepMicros > 0;
+  const bool due = layoutChanged || statesChanged || (animating && start >= fleetNextStepAt);
   if (!due) return true;
-  fleetNextStepAt = start + fleetStepMicros;
+  if (animating) fleetNextStepAt = start + fleetStepMicros;
   // No whole-panel clear. Clearing to black and then drawing is visible as a flash, because the
   // panel scans the buffer while we work. Each column is instead repainted completely from the
   // source frame, which carries its own black surround, so every pixel is written exactly once.
