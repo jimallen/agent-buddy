@@ -119,12 +119,12 @@ class RgbDisplay : public Arduino_Canvas {
       error_ = "The RGB panel cannot present this surface.";
       return false;
     }
-    std::memcpy(target, pixels, static_cast<size_t>(width) * height * sizeof(uint16_t));
-    if (!panel_->present(back_)) {
-      error_ = panel_ ? panel_->error() : "The RGB panel is not started.";
-      return false;
+    const size_t bytes = static_cast<size_t>(width) * height * sizeof(uint16_t);
+    for (int index = 0; index < board::DisplayPanel::kFrameBuffers; ++index) {
+      uint16_t* buffer = panel_->framebuffer(index);
+      if (!buffer) return false;
+      if (buffer != pixels) std::memcpy(buffer, pixels, bytes);
     }
-    back_ ^= 1;
     return true;
   }
   const char* error() const { return error_; }
@@ -139,17 +139,18 @@ class RgbDisplay : public Arduino_Canvas {
       return false;
     }
     const int64_t started = esp_timer_get_time();
-    scanout_->setTarget(panel_->framebuffer(back_));
+    uint16_t* front = panel_->framebuffer(0);
+    scanout_->setTarget(front);
     if (!scanout_->compose(source)) {
       error_ = scanout_->error();
       return false;
     }
     composeUs_ = esp_timer_get_time() - started;
-    if (!panel_->present(back_)) {
-      error_ = panel_->error();
-      return false;
+    for (int index = 1; index < board::DisplayPanel::kFrameBuffers; ++index) {
+      uint16_t* buffer = panel_->framebuffer(index);
+      if (!buffer) return false;
+      std::memcpy(buffer, front, static_cast<size_t>(kRgbPanelWidth) * kRgbPanelHeight * sizeof(uint16_t));
     }
-    back_ ^= 1;
     // The panel scans the framebuffer out on its own, so there is no transfer cost to report.
     writeUs_ = 0;
     return true;
