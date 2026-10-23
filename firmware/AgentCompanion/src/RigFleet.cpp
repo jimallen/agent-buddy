@@ -230,9 +230,12 @@ void blitRigColumn(const uint16_t* art, int artWidth, int artHeight, uint16_t* f
 
 void blitRigColumnNative(const uint16_t* art, int artWidth, int artHeight, uint16_t* frame,
                           int frameWidth, int x0, int y0, int width, int height,
-                          int fullBrightness) {
+                          int fullBrightness, int yieldRows, void (*yield)()) {
   int sourceY = 0, rowError = 0;
   for (int y = 0; y < height; ++y) {
+    // Give the panel's own framebuffer fetch a window every few rows. Writing the scanned buffer
+    // in one unbroken burst starves it, and the picture jumps.
+    if (yield && yieldRows > 0 && y > 0 && y % yieldRows == 0) yield();
     const uint16_t* row = art + static_cast<size_t>(sourceY) * artWidth;
     uint16_t* out = frame + static_cast<size_t>(y0 + y) * frameWidth + x0;
     int sourceX = 0, columnError = 0;

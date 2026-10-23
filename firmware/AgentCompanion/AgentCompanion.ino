@@ -82,6 +82,11 @@ uint16_t* fleetScratch = nullptr;
 CharacterEffects* fleetEffects = nullptr;
 // CharacterEffects keeps a damage record per registered buffer, so it needs two of them.
 uint16_t* fleetScratchAlt = nullptr;
+// Panel-order copy of the current frame. The render target itself must never be reordered: the
+// renderer patches it incrementally and CharacterEffects restores pixels across frames, so an
+// in-place swap corrupts both.
+uint16_t* fleetNative = nullptr;
+
 // Per-column pose signature: the pose a column's pixels were last painted from. An unchanged pose
 // means the panel already shows the right picture, so the tick costs nothing at all.
 uint8_t fleetPoseSignature[kMaxRigSlots][sizeof(SpritePose)];
@@ -312,18 +317,19 @@ bool drawCalibration() {
 // The fleet on a panel wider than the content: one column per rig across the panel's whole
 // width, each character fitted to its column so they read at a similar size (FleetLayout.h).
 // The LCD_CAM scans this buffer continuously, so we only redraw when something changed.
-// Swap the whole frame once, two pixels per 32-bit store. Doing it here is far cheaper than
-// swapping inside the scaled blit: this pass is sequential, while the blit revisits each source
-// pixel as often as the scale repeats it.
-void swapFrameInPlace(uint16_t* pixels, size_t count) {
+// Copy the frame into panel byte order, two pixels per 32-bit store. Copying rather than swapping
+// in place keeps the render target intact: it is patched incrementally between frames and the
+// effects restore pixels from it, so reordering it under them produces colour garbage. This pass
+// is sequential, which is far cheaper than reordering inside the scaled blit.
+void swapFrameTo(const uint16_t* source, uint16_t* destination, size_t count) {
   size_t index = 0;
   for (; index + 1 < count; index += 2) {
     uint32_t pair;
-    std::memcpy(&pair, pixels + index, sizeof(pair));
+    std::memcpy(&pair, source + index, sizeof(pair));
     pair = __builtin_bswap32(pair);
-    std::memcpy(pixels + index, &pair, sizeof(pair));
+    std::memcpy(destination + index, &pair, sizeof(pair));
   }
-  for (; index < count; ++index) pixels[index] = copilot::swapBytes(pixels[index]);
+  for (; index < count; ++index) destination[index] = copilot::swapBytes(source[index]);
 }
 
 bool renderFleetOnPanel(CharacterSprite& sprite, Frame* frame, const PackHeader& pack,
@@ -352,6 +358,9 @@ bool renderFleetOnPanel(CharacterSprite& sprite, Frame* frame, const PackHeader&
     fleetScratchAlt = static_cast<uint16_t*>(allocate(
         sizeof(uint16_t) * kCharacterFrameWidth * kCharacterFrameHeight, MALLOC_CAP_SPIRAM,
         "Fleet effects buffer allocation failed."));
+    fleetNative = static_cast<uint16_t*>(allocate(
+        sizeof(uint16_t) * kCharacterFrameWidth * kCharacterFrameHeight, MALLOC_CAP_SPIRAM,
+        "Fleet panel-order buffer allocation failed."));
     auto* overlay = static_cast<uint16_t*>(allocate(
         CharacterEffects::kOverlayScratchPixels * sizeof(uint16_t), MALLOC_CAP_SPIRAM,
         "Fleet effects overlay allocation failed."));
@@ -408,7 +417,12 @@ bool renderFleetOnPanel(CharacterSprite& sprite, Frame* frame, const PackHeader&
     if (!sprite.render(state, fleetScratch)) return false;
     if (fleetEffects && !fleetEffects->render(state, fleetScratch)) fatal(fleetEffects->error());
     // Match the panel's byte order once for the whole frame, then blit with plain 16-bit copies.
-    if (kPanelSwappedBytes) swapFrameInPlace(fleetScratch, static_cast<size_t>(kCharacterFrameWidth) * kCharacterFrameHeight);
+    const uint16_t* art = fleetScratch;
+    if (kPanelSwappedBytes) {
+      swapFrameTo(fleetScratch, fleetNative,
+                  static_cast<size_t>(kCharacterFrameWidth) * kCharacterFrameHeight);
+      art = fleetNative;
+    }
     std::memcpy(&fleetPoseSignature[index], &state.pose, sizeof(SpritePose));
     fleetPoseValid[index] = true;
     const FleetColumn column = fleetColumn(static_cast<int>(index), static_cast<int>(fleet.count),
@@ -417,9 +431,9 @@ bool renderFleetOnPanel(CharacterSprite& sprite, Frame* frame, const PackHeader&
     // The full source frame, not just the art rectangle: the frame's own black margins cover the
     // column, so a redraw never has to blank the panel first.
     const int columnHeight = panelHeight - kFleetLabelBand;
-    blitRigColumnNative(fleetScratch, kCharacterFrameWidth, kCharacterFrameHeight,
+    blitRigColumnNative(art, kCharacterFrameWidth, kCharacterFrameHeight,
                         target, panelWidth, column.x, 0, column.width, columnHeight,
-                        slot.present ? 1 : 0);
+                        slot.present ? 1 : 0, 24, [] { delayMicroseconds(150); });
     const int labelY = panelHeight - 16;
     const int labelWidth = static_cast<int>(std::strlen(slot.label)) * 6;
     // Colours follow the same byte order as the pixels around them.
