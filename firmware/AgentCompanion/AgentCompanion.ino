@@ -87,7 +87,7 @@ uint16_t* fleetScratchAlt = nullptr;
 bool fleetOnPanel = false;
 // How often the fleet repaints. 0 freezes it: that is the only setting with no writes at all, and
 // therefore the only one that cannot tear.
-int64_t fleetStepMicros = 125000;
+int64_t fleetStepMicros = 50000;
 // The fleet composes here and is copied to the scanned framebuffer in one pass. Writing the live
 // framebuffer column by column tears: the peripheral reads it continuously, so the panel shows
 // half-updated columns as a squashed second character and judder.
@@ -368,7 +368,12 @@ bool renderFleetOnPanel(CharacterSprite& sprite, Frame* frame, const PackHeader&
   // panel scans the buffer while we work. Each column is instead repainted completely from the
   // source frame, which carries its own black surround, so every pixel is written exactly once.
   const int artTop = (kCharacterFrameHeight - kFrameHeight) / 2;
-  for (size_t index = 0; index < fleet.count; ++index) {
+  // Render ONE column per tick. Two columns in one tick cost ~36 ms inside a 66 ms budget, so the
+  // content arrived in uneven bursts and read as jitter even at a fine average rate. One column
+  // per tick is ~18 ms, which fits evenly; a layout change still draws every column at once.
+  const size_t firstIndex = layoutChanged ? 0 : (fleetCursor++ % fleet.count);
+  const size_t lastIndex = layoutChanged ? fleet.count : firstIndex + 1;
+  for (size_t index = firstIndex; index < lastIndex; ++index) {
     const RigSlot& slot = fleet.slots[index];
     stepCharacterMotion(fleetMotions[index], (start - fleetLastStep[index]) / 1000000.0, pack);
     fleetLastStep[index] = start;
