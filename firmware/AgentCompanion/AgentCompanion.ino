@@ -372,6 +372,31 @@ bool renderFleetOnPanel(CharacterSprite& sprite, Frame* frame, const PackHeader&
   }
   const bool layoutChanged = fleet.layoutRevision != fleetLayoutRevision;
   const bool statesChanged = fleet.revision != fleetRenderedRevision;
+  // Subagent badges and the usage lines sit above the art, so a change to either has to trigger a
+  // repaint. Without this the screen simply stops changing once agents and token counts arrive -
+  // which reads as the picture freezing.
+  const AgentBadgesSnapshot badges = agentBadges.snapshot();
+  const UsageLines usage = agentBadges.usage();
+  static uint32_t fleetBadgesRevision = 0xFFFFFFFFu;
+  static uint8_t fleetUsageCount = 0xFF;
+  static char fleetUsageText[kMaxUsageLines][kUsageLineMax + 1] = {};
+  bool overlaysChanged = badges.revision != fleetBadgesRevision || usage.count != fleetUsageCount;
+  if (!overlaysChanged) {
+    for (uint8_t line = 0; line < usage.count; ++line) {
+      if (std::strcmp(usage.text[line], fleetUsageText[line]) != 0) {
+        overlaysChanged = true;
+        break;
+      }
+    }
+  }
+  if (overlaysChanged) {
+    fleetBadgesRevision = badges.revision;
+    fleetUsageCount = usage.count;
+    for (uint8_t line = 0; line < usage.count; ++line) {
+      std::strncpy(fleetUsageText[line], usage.text[line], kUsageLineMax);
+      fleetUsageText[line][kUsageLineMax] = '\0';
+    }
+  }
   if (layoutChanged) fleetLayoutRevision = fleet.layoutRevision;
   if (statesChanged) {
     fleetRenderedRevision = fleet.revision;
@@ -395,7 +420,8 @@ bool renderFleetOnPanel(CharacterSprite& sprite, Frame* frame, const PackHeader&
   // demo is steady precisely because it paints once and then never touches the framebuffer. So the
   // default is a status board that repaints only when a rig actually changes.
   const bool animating = fleetStepMicros > 0;
-  const bool due = layoutChanged || statesChanged || (animating && start >= fleetNextStepAt);
+  const bool due =
+      layoutChanged || statesChanged || overlaysChanged || (animating && start >= fleetNextStepAt);
   if (!due) return true;
   if (animating) fleetNextStepAt = start + fleetStepMicros;
   // No whole-panel clear. Clearing to black and then drawing is visible as a flash, because the
@@ -405,8 +431,9 @@ bool renderFleetOnPanel(CharacterSprite& sprite, Frame* frame, const PackHeader&
   // Render ONE column per tick. Two columns in one tick cost ~36 ms inside a 66 ms budget, so the
   // content arrived in uneven bursts and read as jitter even at a fine average rate. One column
   // per tick is ~18 ms, which fits evenly; a layout change still draws every column at once.
-  const size_t firstIndex = layoutChanged ? 0 : (fleetCursor++ % fleet.count);
-  const size_t lastIndex = layoutChanged ? fleet.count : firstIndex + 1;
+  const bool fullRedraw = layoutChanged || overlaysChanged;
+  const size_t firstIndex = fullRedraw ? 0 : (fleetCursor++ % fleet.count);
+  const size_t lastIndex = fullRedraw ? fleet.count : firstIndex + 1;
   for (size_t index = firstIndex; index < lastIndex; ++index) {
     const RigSlot& slot = fleet.slots[index];
     stepCharacterMotion(fleetMotions[index], (start - fleetLastStep[index]) / 1000000.0, pack);
@@ -415,7 +442,7 @@ bool renderFleetOnPanel(CharacterSprite& sprite, Frame* frame, const PackHeader&
     if (index == 0) frame->state = state;
     // Nothing to paint if this column's pose is byte-identical to the one on screen: the panel
     // already holds the right pixels, so skip both the decode and the blit.
-    const bool poseUnchanged = !layoutChanged && fleetPoseValid[index]
+    const bool poseUnchanged = !fullRedraw && fleetPoseValid[index]
         && std::memcmp(&fleetPoseSignature[index], &state.pose, sizeof(SpritePose)) == 0;
     if (poseUnchanged) continue;
     // The effects own their buffer across frames (they restore what they painted), so reset and
@@ -453,6 +480,20 @@ bool renderFleetOnPanel(CharacterSprite& sprite, Frame* frame, const PackHeader&
     drawRigAgentIcon(slot.agent, target, panelWidth,
                      column.x + (column.width - kIconSize) / 2, labelY - 4 - kIconSize, kIconSize,
                      kPanelSwappedBytes);
+  }
+  // Both overlays live above the art, so any column repaint erases them: draw them after the
+  // columns, not before.
+  for (uint8_t index = 0; index < badges.activeCount && index < kMaxActiveAgentBadges; ++index) {
+    drawRigAgentIcon(badges.active[index].id, target, panelWidth,
+                     6 + index * (kRigBadgeSize + kRigBadgeGap), 6, kRigBadgeSize, kPanelSwappedBytes);
+    painted = true;
+  }
+  for (uint8_t line = 0; line < usage.count; ++line) {
+    const int textWidth = static_cast<int>(std::strlen(usage.text[line])) * 6;
+    const uint16_t color = kPanelSwappedBytes ? copilot::swapBytes(static_cast<uint16_t>(0xCE79)) : 0xCE79;
+    drawRigLabel(target, panelWidth, panelHeight, panelWidth - 6 - textWidth, 6 + line * 10,
+                 usage.text[line], color);
+    painted = true;
   }
   if (painted && !display.presentSurface(target, panelWidth, panelHeight)) return false;
   return true;
