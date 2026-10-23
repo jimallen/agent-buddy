@@ -6,7 +6,7 @@ namespace copilot {
 enum class DeviceCommand {
   None, Invalid, Capture, Heap, Info, UploadCharacter, ConfigureWifi, ScanWifi,
   DefineAgentIcon, SetAgentBadges, SetUsage, GetOrientation, ConfigureOrientation,
-  SetRigFleet, Calibration, FleetRate, Idle, Surprise, Working, Complete, Attention
+  SetRigFleet, Calibration, FleetRate, StartNetwork, Idle, Surprise, Working, Complete, Attention
 };
 constexpr unsigned kDeviceProtocol = 13;
 
@@ -123,6 +123,7 @@ class DeviceCommands {
     {'o', DeviceCommand::GetOrientation}, {'s', DeviceCommand::Capture},
     {'k', DeviceCommand::Calibration},
     {'f', DeviceCommand::FleetRate},
+    {'n', DeviceCommand::StartNetwork},
     {'h', DeviceCommand::Heap}, {'i', DeviceCommand::Info},
     {'u', DeviceCommand::UploadCharacter}, {'w', DeviceCommand::ScanWifi},
   };

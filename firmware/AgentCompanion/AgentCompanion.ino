@@ -38,6 +38,27 @@
 
 using namespace copilot;
 
+// Bring-up switches. The panel is steady with nothing else running, so the question is which
+// subsystem disturbs its scan; Wi-Fi is the heaviest PSRAM and CPU consumer and the vendor demo
+// never starts it, so it goes first.
+constexpr bool kMinimalBringUp = false;
+constexpr bool kEnableNetwork = true;
+// The Wi-Fi stack contends with the RGB panel for PSRAM, and on the seven-inch board that shows
+// up as the picture jumping. So it is only started when the device has a network to join; the
+// network can also be started on demand with the 'n' command.
+bool networkStarted = false;
+// Set by the 'n' command and acted on in loop(), where the diagnostics callback is in scope.
+bool pendingNetworkStart = false;
+
+
+bool wifiConfigured() {
+  Preferences preferences;
+  if (!preferences.begin("agent-network", true)) return false;
+  const String ssid = preferences.getString("ssid", String());
+  preferences.end();
+  return ssid.length() > 0;
+}
+
 namespace {
 // The board decides how pixels reach its panel: a DMA-pushed SPI/QSPI display, or an RGB
 // framebuffer the LCD_CAM peripheral scans out. The sketch only sees this reference.
@@ -1443,6 +1464,10 @@ void processCommand(DeviceCommand command, const DeviceCommands& parser, const F
           : "static");
       break;
     }
+    case DeviceCommand::StartNetwork:
+      logMessage(networkStarted ? "WIFI already running\n" : "WIFI start requested\n");
+      pendingNetworkStart = true;
+      break;
     case DeviceCommand::Calibration:
       if (calibrationMode) {
         calibrationMode = false;
@@ -1571,6 +1596,16 @@ int writeUsbSerialDiagnostics(char* output, size_t capacity) {
                   static_cast<unsigned>(usbSerialWatchdog.restarts()));
 }
 
+// Starts the Wi-Fi stack at most once. Kept out of the command switch so the USB diagnostics
+// callback is already declared where it is used.
+void startNetwork() {
+  if (networkStarted) return;
+  network.begin(queueNetworkMode, &kWifiUpload, handleBadgePacket, &kOrientationControl,
+                writeUsbSerialDiagnostics);
+  networkStarted = true;
+}
+
+
 void processSerialCommands(const Frame* frame, unsigned maxBytes) {
   checkUsbSerial();
   processCommand(commandParser.expire(esp_timer_get_time() / 1000), commandParser, frame);
@@ -1668,7 +1703,7 @@ void setup() {
   display.fillScreen(0);
   characterReady = initializeSpriteStorage();
   if (!characterReady) logMessage("CHARACTER id=none reason=%s\n", spriteStorageError());
-  if (!initializeTouchInput()) fatal(touchInputError());
+  if (!kMinimalBringUp && !initializeTouchInput()) fatal(touchInputError());
   // Touch has started the shared I2C bus, so the board variant can be detected now.
   logMessage("Board variant: %s\n", board::variantName(board::variant()));
   pinMode(kBootButtonPin, INPUT_PULLUP);
@@ -1676,9 +1711,15 @@ void setup() {
   orientationDirty = display.setTrim(orientationOffsetTenths * kOrientationPi / 1800.0f);
   // Start Wi-Fi before renderer and audio allocations so the radio stack can reserve contiguous
   // internal RAM. The character allocator will move optional patch buffers to PSRAM as needed.
-  network.begin(queueNetworkMode, &kWifiUpload, handleBadgePacket, &kOrientationControl,
-                writeUsbSerialDiagnostics);
-  if (!orientationSensor.begin()) {
+  if (kEnableNetwork && wifiConfigured()) {
+    startNetwork();
+  } else if (kEnableNetwork) {
+    // Nothing to join: leave the radio off rather than disturb the panel for no benefit.
+    logMessage("WIFI idle reason=no-network-configured\n");
+  }
+  if (kMinimalBringUp) {
+    logMessage("ORIENTATION skipped (minimal bring-up)\n");
+  } else if (!orientationSensor.begin()) {
     logMessage("ORIENTATION disabled reason=%s\n", orientationSensor.error());
   } else {
     logMessage("ORIENTATION sensor=%s mode=continuous\n", board::kImuName);
@@ -1686,7 +1727,7 @@ void setup() {
   const uint8_t storedSoundVolume = loadSoundVolume();
   settings.setSoundVolume(storedSoundVolume);
   setSoundVolume(storedSoundVolume);
-  beginAudio();
+  if (!kMinimalBringUp) beginAudio();
   transferBuffer = static_cast<uint8_t*>(heap_caps_aligned_alloc(
       16, kTransferBytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
   if (!transferBuffer) fatal("DMA staging allocation failed.");
@@ -1754,6 +1795,10 @@ bool showFirmwarePrompt(bool shell) {
 // Without a pack the shell keeps USB, Wi-Fi setup, and installation available.
 void shellLoop() {
   static uint32_t networkRevision = UINT32_MAX;
+  if (pendingNetworkStart) {
+    pendingNetworkStart = false;
+    startNetwork();
+  }
   network.update();
   const bool orientationChanged = updateOrientation();
   if (restartAt || installStarted) return;
@@ -1839,11 +1884,13 @@ void loop() {
     display.setBrightness(static_cast<uint8_t>(settings.brightness() * smoother(fadeFrame / 40.0f)));
     ++fadeFrame;
   }
-  TouchGesture gesture;
-  if (pollTouchGesture(gesture) && !prompt) handleTouchGesture(gesture, *frame);
-  if (touchInputError()) fatal(touchInputError());
+  if (!kMinimalBringUp) {
+    TouchGesture gesture;
+    if (pollTouchGesture(gesture) && !prompt) handleTouchGesture(gesture, *frame);
+    if (touchInputError()) fatal(touchInputError());
+  }
   pollBootButton();
-  closeIdleSettings();
+  if (!kMinimalBringUp) closeIdleSettings();
   processSerialCommands(frame, 8);
   if (frame->state.eventId != previousEvent || frame->state.mode != previousMode) {
     logMessage("STATE mode=%s requested=%s event=%u\n", modeName(frame->state.mode),
