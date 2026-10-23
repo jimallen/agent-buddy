@@ -36,6 +36,9 @@ constexpr int kDisplaySpeed = kSpiFrequency;
 constexpr int kDisplayBacklightPin = 46;
 constexpr uint32_t kDisplayBacklightPwmHz = 5000;
 constexpr uint8_t kDisplayBacklightPwmBits = 10;
+// These panels take the pack's display-order bytes exactly as the renderer writes them; the RGB
+// board is the one that needs a swap, because its peripheral reads native RGB565.
+constexpr bool kPanelSwappedBytes = false;
 constexpr int kBrightness = 155;
 
 // On battery the board stays on only while this pin is high. setup() sets it first.

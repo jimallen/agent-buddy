@@ -141,6 +141,38 @@ into a smeared second character), and runs its own `CharacterEffects` over a sec
 pair so the orbiting tokens appear per column. Two columns cost ~41 ms per update, which
 caps the loop near 16 fps, so the default animation rate is 8 fps.
 
+
+## Performance budget: the panel is fed from the same PSRAM
+
+This board's panel has no "send a frame" step - LCD_CAM scans a framebuffer out of PSRAM
+continuously. **Every byte the firmware writes competes with that scan**, and when it loses,
+the picture jumps, tears or appears to cycle through half-drawn frames. Measured on glass:
+
+| Cost | Measured | Fix |
+| --- | --- | --- |
+| Composing one 412x466 frame, per-pixel byte swap | ~40 ms | two pixels per `BSWAP` (32-bit store) |
+| Blitting one fleet column, per-pixel swap + scale | ~57 ms | scale by integer stepping (done); pre-swap per pose (open) |
+| Wi-Fi stack running with no network configured | starved the scan outright | start only when configured, or with `n` |
+
+Two rules follow, and both were learned the hard way:
+
+1. **Never write more than necessary.** Clearing the panel to black and then drawing is
+   visible as a flash, and a blit that only covers the character leaves stale pixels that
+   read as the picture bouncing. Each fleet column is repainted edge to edge from the source
+   frame, which carries its own black surround, so nothing is blanked and nothing is stale.
+2. **Spread the work evenly.** Two columns in one tick cost ~36 ms against a 66 ms budget;
+   the uneven bursts read as jitter even at a healthy average rate. One column per tick, at
+   15 Hz, is what looks right.
+
+Diagnostics that make this measurable without a camera: `k` draws a frozen calibration
+pattern, `f` cycles the fleet rate (4/8/15/30/static), `n` starts Wi-Fi on demand, and the
+`PERF` log line reports `render` and `SCANOUT compose` in microseconds.
+
+If smoothness beyond 15 fps with two rigs is wanted, the remaining cost is the column
+blit's per-pixel swap plus re-decoding a frame per column per tick; pre-swapping each
+column's frame once per pose (and giving each column its own decoded cache, ~380 KB of the
+4 MB free PSRAM) should bring a column to single-digit milliseconds.
+
 ## Previewing without the board
 
 There is no usable emulator for this panel: QEMU's ESP32-S3 target and Wokwi both emulate the

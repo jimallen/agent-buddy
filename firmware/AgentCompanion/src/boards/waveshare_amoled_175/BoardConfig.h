@@ -37,6 +37,9 @@ constexpr int kDisplaySpeed = kSpiFrequency;
 // CO5300 QSPI pixel write: command 0x32, address 0x003C00 (RAMWR).
 constexpr uint8_t kDisplayQspiWriteCommand = 0x32;
 constexpr uint32_t kDisplayQspiPixelAddress = 0x003C00;
+// These panels take the pack's display-order bytes exactly as the renderer writes them; the RGB
+// board is the one that needs a swap, because its peripheral reads native RGB565.
+constexpr bool kPanelSwappedBytes = false;
 constexpr int kBrightness = 155;
 
 // Audio MCLK is GPIO42, except on the 1.75-C, which uses GPIO16 (expansion header pin 8 on the
