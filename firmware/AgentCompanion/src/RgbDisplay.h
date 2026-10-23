@@ -23,7 +23,7 @@ class RgbDisplay : public Arduino_Canvas {
       error_ = "RGB panel initialization failed.";
       return false;
     }
-    uint16_t* framebuffer = panel_->getFramebuffer();
+    uint16_t* framebuffer = panel_->framebuffer(0);
     if (!framebuffer) {
       error_ = "The RGB panel reported no framebuffer.";
       return false;
@@ -52,6 +52,12 @@ class RgbDisplay : public Arduino_Canvas {
     if (!scanout_->begin()) {
       error_ = scanout_->error();
       return false;
+    }
+    // Both buffers start black, so the first presented frame has defined margins.
+    for (int index = 0; index < board::DisplayPanel::kFrameBuffers; ++index) {
+      if (uint16_t* other = panel_->framebuffer(index)) {
+        std::memset(other, 0, static_cast<size_t>(kRgbPanelWidth) * kRgbPanelHeight * sizeof(uint16_t));
+      }
     }
     scanout_->setAngle(angle_ + trim_);
     // 32 rows is ~3 KB per band; a short pause between bands keeps the panel's fetch fed.
@@ -101,7 +107,25 @@ class RgbDisplay : public Arduino_Canvas {
   uint16_t* panelFramebuffer(int& width, int& height) {
     width = kRgbPanelWidth;
     height = kRgbPanelHeight;
-    return panel_ ? panel_->getFramebuffer() : nullptr;
+    return panel_ ? panel_->framebuffer(back_) : nullptr;
+  }
+
+  // Present a panel-sized surface composed elsewhere. The panel scans the other buffer throughout,
+  // so this copy cannot tear the picture being shown.
+  bool presentSurface(const uint16_t* pixels, int width, int height) {
+    error_ = nullptr;
+    uint16_t* target = panel_ ? panel_->framebuffer(back_) : nullptr;
+    if (!target || !pixels || width != kRgbPanelWidth || height != kRgbPanelHeight) {
+      error_ = "The RGB panel cannot present this surface.";
+      return false;
+    }
+    std::memcpy(target, pixels, static_cast<size_t>(width) * height * sizeof(uint16_t));
+    if (!panel_->present(back_)) {
+      error_ = panel_ ? panel_->error() : "The RGB panel is not started.";
+      return false;
+    }
+    back_ ^= 1;
+    return true;
   }
   const char* error() const { return error_; }
   uint32_t composeUs() const { return composeUs_; }
@@ -115,11 +139,17 @@ class RgbDisplay : public Arduino_Canvas {
       return false;
     }
     const int64_t started = esp_timer_get_time();
+    scanout_->setTarget(panel_->framebuffer(back_));
     if (!scanout_->compose(source)) {
       error_ = scanout_->error();
       return false;
     }
     composeUs_ = esp_timer_get_time() - started;
+    if (!panel_->present(back_)) {
+      error_ = panel_->error();
+      return false;
+    }
+    back_ ^= 1;
     // The panel scans the framebuffer out on its own, so there is no transfer cost to report.
     writeUs_ = 0;
     return true;
@@ -134,5 +164,7 @@ class RgbDisplay : public Arduino_Canvas {
   const char* error_ = nullptr;
   uint32_t composeUs_ = 0;
   uint32_t writeUs_ = 0;
+  // The buffer being painted; the panel scans the other one.
+  int back_ = 0;
 };
 }

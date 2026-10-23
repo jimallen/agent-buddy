@@ -30,6 +30,9 @@ class RgbScanout {
     if (!valid_) error_ = "Invalid RGB panel geometry or framebuffer.";
   }
 
+  // Point the scanout at another framebuffer: the panel scans one while the other is painted.
+  void setTarget(uint16_t* framebuffer) { panel_ = framebuffer; }
+
   // Paints the whole panel black once, so the margins are defined before the first frame.
   bool begin() {
     error_ = nullptr;

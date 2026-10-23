@@ -7,12 +7,12 @@
 // Plain constants only: native tests include this file without the vendor libraries.
 #include <cstdint>
 
-class Arduino_RGB_Display;
+#include "../../RgbPanel.h"
 
 namespace copilot {
 namespace board {
 // Declared here so display code can name the panel without the vendor library.
-using DisplayPanel = ::Arduino_RGB_Display;
+using DisplayPanel = copilot::RgbPanel;
 constexpr char kId[] = "waveshare-lcd-70";
 constexpr char kName[] = "Waveshare ESP32-S3-Touch-LCD-7";
 constexpr char kDisplayPanelName[] = "ST7262";

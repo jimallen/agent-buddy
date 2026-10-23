@@ -341,9 +341,11 @@ bool renderFleetOnPanel(CharacterSprite& sprite, Frame* frame, const PackHeader&
         panelPixels * sizeof(uint16_t), MALLOC_CAP_SPIRAM, "Fleet staging buffer allocation failed."));
     std::memset(fleetBackBuffer, 0, panelPixels * sizeof(uint16_t));
   }
-  // Draw straight into the framebuffer the panel scans, in row-sized writes. Staging then
-  // copying doubled the work and left a window where the panel read a half-written buffer.
-  uint16_t* const target = panel;
+  // Compose into a buffer of our own and hand it to the panel with a buffer swap, so the buffer
+  // being scanned is never written.
+  uint16_t* const target = fleetBackBuffer;
+  (void)panel;
+  bool painted = false;
   if (!fleetMotions) {
     fleetMotions = static_cast<CharacterMotion*>(allocate(
         sizeof(CharacterMotion) * kMaxRigSlots, MALLOC_CAP_SPIRAM, "Fleet motion allocation failed."));
@@ -438,7 +440,8 @@ bool renderFleetOnPanel(CharacterSprite& sprite, Frame* frame, const PackHeader&
     const int columnHeight = panelHeight - kFleetLabelBand;
     blitRigColumnNative(art, kCharacterFrameWidth, kCharacterFrameHeight,
                         target, panelWidth, column.x, 0, column.width, columnHeight,
-                        slot.present ? 1 : 0, 24, [] { delayMicroseconds(150); });
+                        slot.present ? 1 : 0);
+    painted = true;
     const int labelY = panelHeight - 16;
     const int labelWidth = static_cast<int>(std::strlen(slot.label)) * 6;
     // Colours follow the same byte order as the pixels around them.
@@ -451,6 +454,7 @@ bool renderFleetOnPanel(CharacterSprite& sprite, Frame* frame, const PackHeader&
                      column.x + (column.width - kIconSize) / 2, labelY - 4 - kIconSize, kIconSize,
                      kPanelSwappedBytes);
   }
+  if (painted && !display.presentSurface(target, panelWidth, panelHeight)) return false;
   return true;
 }
 

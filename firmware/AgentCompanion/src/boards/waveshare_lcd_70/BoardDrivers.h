@@ -54,7 +54,7 @@ inline void beginBoard() {
 }
 
 inline DisplayPanel& displayPanel() {
-  static Arduino_ESP32RGBPanel* rgbpanel = new Arduino_ESP32RGBPanel(
+  static DisplayPanel panel(
       kRgbDePin, kRgbVsyncPin, kRgbHsyncPin, kRgbPclkPin,
       kRgbR0, kRgbR1, kRgbR2, kRgbR3, kRgbR4,
       kRgbG0, kRgbG1, kRgbG2, kRgbG3, kRgbG4, kRgbG5,
@@ -66,8 +66,8 @@ inline DisplayPanel& displayPanel() {
       // A bounce buffer is what stops a PSRAM-backed RGB panel from drifting and shimmering:
       // the peripheral stages a slice of the line in internal memory instead of racing the
       // external bus for every pixel. Waveshare's own demo uses ten lines' worth.
-      static_cast<size_t>(kRgbPanelWidth) * kRgbBounceLines);
-  static DisplayPanel panel(kRgbPanelWidth, kRgbPanelHeight, rgbpanel);
+      static_cast<size_t>(kRgbPanelWidth) * kRgbBounceLines,
+      kRgbPanelWidth, kRgbPanelHeight);
   return panel;
 }
 
