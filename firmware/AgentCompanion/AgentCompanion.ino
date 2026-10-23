@@ -346,6 +346,9 @@ bool renderFleetOnPanel(CharacterSprite& sprite, Frame* frame, const PackHeader&
   uint16_t* const target = fleetBackBuffer;
   (void)panel;
   bool painted = false;
+  bool columnDirty = false;
+  int dirtyColumnX = 0;
+  int dirtyColumnWidth = panelWidth;
   if (!fleetMotions) {
     fleetMotions = static_cast<CharacterMotion*>(allocate(
         sizeof(CharacterMotion) * kMaxRigSlots, MALLOC_CAP_SPIRAM, "Fleet motion allocation failed."));
@@ -431,7 +434,10 @@ bool renderFleetOnPanel(CharacterSprite& sprite, Frame* frame, const PackHeader&
   // Render ONE column per tick. Two columns in one tick cost ~36 ms inside a 66 ms budget, so the
   // content arrived in uneven bursts and read as jitter even at a fine average rate. One column
   // per tick is ~18 ms, which fits evenly; a layout change still draws every column at once.
-  const bool fullRedraw = layoutChanged || overlaysChanged;
+  // Badges and usage lines live in a band of their own above the art. Over black they can be
+  // erased cheaply, so an overlay change repaints 40 rows instead of the whole panel.
+  constexpr int kFleetChrome = 40;
+  const bool fullRedraw = layoutChanged;
   const size_t firstIndex = fullRedraw ? 0 : (fleetCursor++ % fleet.count);
   const size_t lastIndex = fullRedraw ? fleet.count : firstIndex + 1;
   for (size_t index = firstIndex; index < lastIndex; ++index) {
@@ -442,7 +448,7 @@ bool renderFleetOnPanel(CharacterSprite& sprite, Frame* frame, const PackHeader&
     if (index == 0) frame->state = state;
     // Nothing to paint if this column's pose is byte-identical to the one on screen: the panel
     // already holds the right pixels, so skip both the decode and the blit.
-    const bool poseUnchanged = !fullRedraw && fleetPoseValid[index]
+    const bool poseUnchanged = !layoutChanged && fleetPoseValid[index]
         && std::memcmp(&fleetPoseSignature[index], &state.pose, sizeof(SpritePose)) == 0;
     if (poseUnchanged) continue;
     // The effects own their buffer across frames (they restore what they painted), so reset and
@@ -464,11 +470,14 @@ bool renderFleetOnPanel(CharacterSprite& sprite, Frame* frame, const PackHeader&
                                            kCharacterFrameWidth, kCharacterFrameHeight);
     // The full source frame, not just the art rectangle: the frame's own black margins cover the
     // column, so a redraw never has to blank the panel first.
-    const int columnHeight = panelHeight - kFleetLabelBand;
+    const int columnHeight = panelHeight - kFleetChrome - kFleetLabelBand;
     blitRigColumnNative(art, kCharacterFrameWidth, kCharacterFrameHeight,
-                        target, panelWidth, column.x, 0, column.width, columnHeight,
+                        target, panelWidth, column.x, kFleetChrome, column.width, columnHeight,
                         slot.present ? 1 : 0);
     painted = true;
+    columnDirty = true;
+    dirtyColumnX = column.x;
+    dirtyColumnWidth = column.width;
     const int labelY = panelHeight - 16;
     const int labelWidth = static_cast<int>(std::strlen(slot.label)) * 6;
     // Colours follow the same byte order as the pixels around them.
@@ -483,20 +492,42 @@ bool renderFleetOnPanel(CharacterSprite& sprite, Frame* frame, const PackHeader&
   }
   // Both overlays live above the art, so any column repaint erases them: draw them after the
   // columns, not before.
-  for (uint8_t index = 0; index < badges.activeCount && index < kMaxActiveAgentBadges; ++index) {
+  const bool chromeDirty = overlaysChanged || layoutChanged;
+  if (chromeDirty) {
+    std::memset(target, 0, static_cast<size_t>(kFleetChrome) * panelWidth * sizeof(uint16_t));
+  }
+  for (uint8_t index = 0; chromeDirty && index < badges.activeCount && index < kMaxActiveAgentBadges; ++index) {
     drawRigAgentIcon(badges.active[index].id, target, panelWidth,
-                     6 + index * (kRigBadgeSize + kRigBadgeGap), 6, kRigBadgeSize, kPanelSwappedBytes);
+                     6 + index * (kRigBadgeSize + kRigBadgeGap), 8, kRigBadgeSize, kPanelSwappedBytes);
     painted = true;
   }
-  for (uint8_t line = 0; line < usage.count; ++line) {
+  for (uint8_t line = 0; chromeDirty && line < usage.count; ++line) {
     const int textWidth = static_cast<int>(std::strlen(usage.text[line])) * 6;
-    const uint16_t color = kPanelSwappedBytes ? copilot::swapBytes(static_cast<uint16_t>(0xCE79)) : 0xCE79;
-    drawRigLabel(target, panelWidth, panelHeight, panelWidth - 6 - textWidth, 6 + line * 10,
+    const uint16_t color =
+        kPanelSwappedBytes ? copilot::swapBytes(static_cast<uint16_t>(0xCE79)) : 0xCE79;
+    drawRigLabel(target, panelWidth, panelHeight, panelWidth - 6 - textWidth, 8 + line * 10,
                  usage.text[line], color);
     painted = true;
   }
-  if (painted && !display.presentSurface(target, panelWidth, panelHeight)) return false;
-  return true;
+  // Only the part that changed is written to the panel, because a whole-frame copy monopolises the
+  // PSRAM bandwidth the panel's own fetch needs and the picture breaks up meanwhile.
+  int regionX = 0, regionY = 0, regionW = 0, regionH = 0;
+  if (layoutChanged) {
+    regionW = panelWidth;
+    regionH = panelHeight;
+  } else if (columnDirty) {
+    regionX = dirtyColumnX;
+    regionY = kFleetChrome;
+    regionW = dirtyColumnWidth;
+    regionH = panelHeight - kFleetChrome;
+  } else if (chromeDirty) {
+    regionW = panelWidth;
+    regionH = kFleetChrome;
+  } else {
+    return true;
+  }
+  (void)painted;
+  return display.presentRegion(target, panelWidth, regionX, regionY, regionW, regionH);
 }
 
 // The fleet is a status board: render columns only on fleet-packet or heartbeat changes,

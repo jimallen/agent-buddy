@@ -20,7 +20,7 @@ class RgbDisplay : public Arduino_Canvas {
   bool begin(int32_t speed = GFX_NOT_DEFINED) override {
     error_ = nullptr;
     if (!panel_->begin(speed)) {
-      error_ = "RGB panel initialization failed.";
+      error_ = panel_->error() ? panel_->error() : "RGB panel initialization failed.";
       return false;
     }
     uint16_t* framebuffer = panel_->framebuffer(0);
@@ -110,30 +110,35 @@ class RgbDisplay : public Arduino_Canvas {
     return panel_ ? panel_->framebuffer(back_) : nullptr;
   }
 
-  // Present a panel-sized surface composed elsewhere. The panel scans the other buffer throughout,
-  // so this copy cannot tear the picture being shown.
+  // Present a panel-sized surface composed elsewhere.
   bool presentSurface(const uint16_t* pixels, int width, int height) {
+    return presentRegion(pixels, width, 0, 0, width, height);
+  }
+
+  // Write only a rectangle of the composed image, in paced rows. A whole-frame copy takes ~200 ms
+  // because the panel's own fetch is using most of the PSRAM bandwidth; smaller, paced writes keep
+  // the scan fed so the picture stays intact.
+  bool presentRegion(const uint16_t* pixels, int stride, int x, int y, int width, int height) {
     error_ = nullptr;
-    uint16_t* target = panel_ ? panel_->framebuffer(back_) : nullptr;
-    if (!target || !pixels || width != kRgbPanelWidth || height != kRgbPanelHeight) {
+    uint16_t* target = panel_ ? panel_->framebuffer(0) : nullptr;
+    if (!target || !pixels) {
       error_ = "The RGB panel cannot present this surface.";
       return false;
     }
-    const size_t bytes = static_cast<size_t>(width) * height * sizeof(uint16_t);
-    uint16_t* painted = panel_->framebuffer(back_);
-    if (!painted) return false;
-    // Paint the buffer the panel is not scanning, hand it over, and only then bring the other one
-    // up to date - by which time the panel has moved off it. Copying into both up front writes the
-    // buffer being scanned, which is exactly what made the picture fail while the tokens animated.
-    std::memcpy(painted, pixels, bytes);
-    if (!panel_->present(back_)) {
-      error_ = panel_->error();
+    if (x < 0 || y < 0 || width <= 0 || height <= 0 || stride < x + width
+        || x + width > kRgbPanelWidth || y + height > kRgbPanelHeight) {
+      error_ = "The RGB panel cannot present this region.";
       return false;
     }
-    back_ ^= 1;
-    if (uint16_t* spare = panel_->framebuffer(back_)) std::memcpy(spare, pixels, bytes);
+    for (int row = 0; row < height; ++row) {
+      std::memcpy(target + static_cast<size_t>(y + row) * kRgbPanelWidth + x,
+                  pixels + static_cast<size_t>(y + row) * stride + x,
+                  static_cast<size_t>(width) * sizeof(uint16_t));
+      if ((row & 7) == 7) delayMicroseconds(120);
+    }
     return true;
   }
+
   const char* error() const { return error_; }
   uint32_t composeUs() const { return composeUs_; }
   uint32_t writeUs() const { return writeUs_; }
@@ -153,15 +158,6 @@ class RgbDisplay : public Arduino_Canvas {
       return false;
     }
     composeUs_ = esp_timer_get_time() - started;
-    // Same order as presentSurface: hand the painted buffer over first, then catch the other up
-    // while the panel is busy scanning the one just presented.
-    if (!panel_->present(0)) {
-      error_ = panel_->error();
-      return false;
-    }
-    if (uint16_t* spare = panel_->framebuffer(1)) {
-      std::memcpy(spare, front, static_cast<size_t>(kRgbPanelWidth) * kRgbPanelHeight * sizeof(uint16_t));
-    }
     // The panel scans the framebuffer out on its own, so there is no transfer cost to report.
     writeUs_ = 0;
     return true;

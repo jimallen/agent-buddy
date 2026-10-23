@@ -36,7 +36,11 @@ class RgbPanel {
         de_idle_high_(de_idle_high), pclk_idle_high_(pclk_idle_high),
         bounce_px_(bounce_buffer_size_px), width_(width), height_(height) {}
 
-  static constexpr int kFrameBuffers = 2;
+  // One framebuffer. Two halved the write window but forced a mirror copy of the whole panel on
+  // every present, which is more PSRAM traffic than the panel's own scan can spare - that copy is
+  // what starved the scan and froze the picture. Presenting only the changed region is the cheaper
+  // way to keep the scan fed.
+  static constexpr int kFrameBuffers = 1;
 
   bool begin(int32_t speed = -1) {
     error_ = nullptr;
@@ -74,7 +78,7 @@ class RgbPanel {
     for (int index = 0; index < 16; ++index) config.data_gpio_nums[index] = data[index];
     config.flags.disp_active_low = true;
     config.flags.fb_in_psram = true;
-    config.flags.double_fb = true;
+
 
     const esp_err_t created = esp_lcd_new_rgb_panel(&config, &handle_);
     if (created != ESP_OK) {
@@ -86,12 +90,14 @@ class RgbPanel {
       error_ = "The RGB panel did not start.";
       return false;
     }
-    if (esp_lcd_rgb_panel_get_frame_buffer(handle_, kFrameBuffers,
-                                           reinterpret_cast<void**>(&fb_[0]),
-                                           reinterpret_cast<void**>(&fb_[1])) != ESP_OK
-        || !fb_[0] || !fb_[1]) {
-      error_ = "The RGB panel reported too few framebuffers.";
+    void* buffers[2] = {nullptr, nullptr};
+    if (esp_lcd_rgb_panel_get_frame_buffer(handle_, kFrameBuffers, &buffers[0], &buffers[1]) != ESP_OK
+        || !buffers[0]) {
+      error_ = "The RGB panel reported no framebuffer.";
       return false;
+    }
+    for (int index = 0; index < kFrameBuffers; ++index) {
+      fb_[index] = static_cast<uint16_t*>(buffers[index]);
     }
     return true;
   }
