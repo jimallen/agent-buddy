@@ -364,12 +364,9 @@ bool renderFleetOnPanel(CharacterSprite& sprite, Frame* frame, const PackHeader&
   const bool due = layoutChanged || start >= fleetNextStepAt;
   if (!due) return true;
   fleetNextStepAt = start + fleetStepMicros;
-  // Only now that a redraw is really happening. Clear row by row: the peripheral keeps scanning
-  // while we write, and interleaving small writes is what the single-character path does without
-  // trouble, whereas one panel-sized burst starves it.
-  for (int y = 0; y < panelHeight; ++y)
-    std::memset(target + static_cast<size_t>(y) * panelWidth, 0,
-                static_cast<size_t>(panelWidth) * sizeof(uint16_t));
+  // No whole-panel clear. Clearing to black and then drawing is visible as a flash, because the
+  // panel scans the buffer while we work. Each column is instead repainted completely from the
+  // source frame, which carries its own black surround, so every pixel is written exactly once.
   const int artTop = (kCharacterFrameHeight - kFrameHeight) / 2;
   for (size_t index = 0; index < fleet.count; ++index) {
     const RigSlot& slot = fleet.slots[index];
@@ -385,9 +382,11 @@ bool renderFleetOnPanel(CharacterSprite& sprite, Frame* frame, const PackHeader&
     const FleetColumn column = fleetColumn(static_cast<int>(index), static_cast<int>(fleet.count),
                                            panelWidth, panelHeight,
                                            kCharacterFrameWidth, kCharacterFrameHeight);
-    // This path writes the framebuffer the panel scans, so it applies the board's byte order.
-    blitRigColumn(fleetScratch + artTop * kCharacterFrameWidth, kCharacterFrameWidth, kFrameHeight,
-                  target, panelWidth, column.artX, column.artY, column.artWidth, column.artHeight,
+    // The full source frame, not just the art rectangle: the frame's own black margins cover the
+    // column, so a redraw never has to blank the panel first.
+    const int columnHeight = panelHeight - kFleetLabelBand;
+    blitRigColumn(fleetScratch, kCharacterFrameWidth, kCharacterFrameHeight,
+                  target, panelWidth, column.x, 0, column.width, columnHeight,
                   slot.present ? 1 : 0, kPanelSwappedBytes);
     const int labelY = panelHeight - 16;
     const int labelWidth = static_cast<int>(std::strlen(slot.label)) * 6;

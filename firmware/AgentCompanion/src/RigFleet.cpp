@@ -195,13 +195,28 @@ uint16_t dimRigPixel(uint16_t pixel) {
 void blitRigColumn(const uint16_t* art, int artWidth, int artHeight, uint16_t* frame,
                    int frameWidth, int x0, int y0, int width, int height, int fullBrightness,
                    bool swapBytes) {
+  // Nearest-neighbour scaling by integer accumulation instead of a division per pixel: the
+  // mapping is identical to floor(index * source / target), but one column of 400x454 costs
+  // 360k divisions otherwise, which alone was several milliseconds of every frame.
+  int sourceY = 0, rowError = 0;
   for (int y = 0; y < height; ++y) {
-    const int sourceY = y * artHeight / height;
+    const uint16_t* row = art + static_cast<size_t>(sourceY) * artWidth;
+    uint16_t* out = frame + static_cast<size_t>(y0 + y) * frameWidth + x0;
+    int sourceX = 0, columnError = 0;
     for (int x = 0; x < width; ++x) {
-      const int sourceX = x * artWidth / width;
-      uint16_t pixel = art[sourceY * artWidth + sourceX];
+      uint16_t pixel = row[sourceX];
       if (swapBytes) pixel = swapBytesValue(pixel);
-      frame[(y0 + y) * frameWidth + x0 + x] = fullBrightness ? pixel : dimRigPixel(pixel);
+      out[x] = fullBrightness ? pixel : dimRigPixel(pixel);
+      columnError += artWidth;
+      while (columnError >= width) {
+        columnError -= width;
+        ++sourceX;
+      }
+    }
+    rowError += artHeight;
+    while (rowError >= height) {
+      rowError -= height;
+      ++sourceY;
     }
   }
 }
